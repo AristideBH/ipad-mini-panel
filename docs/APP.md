@@ -40,9 +40,12 @@ scripts/app-sim.sh
 La compilation se fait dans un conteneur Alpine ARMv7 émulé par QEMU, et produit un binaire statique : il ne dépend d'aucune bibliothèque de l'image de l'iPad.
 
 ```sh
-sudo apt install -y qemu-user-static   # une fois
+sudo apt install -y qemu-user-binfmt   # une fois (qemu-user-static avant Ubuntu 26.04)
+docker run --rm --platform linux/arm/v7 alpine:3.22 uname -m   # doit afficher armv7l
 scripts/app-build-ipad.sh
 ```
+
+Si la vérification affiche `exec format error`, Docker ne voit pas l'émulation ARM. L'activer avec `docker run --privileged --rm tonistiigi/binfmt --install arm`.
 
 La première fois, LVGL se compile sous émulation : compter plusieurs minutes.
 

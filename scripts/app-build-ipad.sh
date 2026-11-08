@@ -3,8 +3,9 @@
 # conteneur Alpine ARM émulé par QEMU. Le binaire ne dépend de rien sur l'iPad.
 #
 # Prérequis Ubuntu, une seule fois :
-#   sudo apt install -y qemu-user-static
-# (enregistre l'émulation ARM auprès du noyau, Docker s'en sert ensuite)
+#   sudo apt install -y qemu-user-binfmt      (qemu-user-static avant Ubuntu 26.04)
+# Vérification : docker run --rm --platform linux/arm/v7 alpine:3.22 uname -m  -> armv7l
+# Si « exec format error » : docker run --privileged --rm tonistiigi/binfmt --install arm
 set -eu
 cd "$(dirname "$0")/../app"
 
