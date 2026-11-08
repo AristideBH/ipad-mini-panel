@@ -1,0 +1,19 @@
+# À copier dans ~/.ssh/config (Mac et Linux) ou C:\Users\<nom>\.ssh\config (Windows).
+# Remplacer l'adresse IP par celle de l'iPad (Réglages, Wi-Fi, bouton i).
+
+# iPad sous iOS 9.3.5 jailbreaké, OpenSSH de Cydia
+Host ipad-ios
+    HostName 192.168.68.95
+    User root
+    HostKeyAlgorithms +ssh-rsa
+    PubkeyAcceptedAlgorithms +ssh-rsa
+    # Si la connexion échoue sur l'échange de clés, décommenter :
+    # KexAlgorithms +diffie-hellman-group14-sha1
+
+# iPad sous Linux (Cascadia), par le câble USB
+Host ipad-linux
+    HostName 10.55.0.2
+    User root
+    IdentityFile ~/.ssh/id_ed25519
+    # Chaque nouvelle image apporte d'autres clés d'hôte :
+    StrictHostKeyChecking accept-new

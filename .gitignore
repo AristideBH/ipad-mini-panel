@@ -1,0 +1,19 @@
+# Fichiers d'Apple et propres à l'iPad : jamais dans git
+firmware/
+*.ipsw
+*.img3
+*.dfu
+mtcal.bin
+wifi-mac
+
+# Cascadia, cloné à part (passera en sous-module épinglé)
+cascadia/
+
+# Produits de build
+build/
+output/
+app/sim/build/
+app/target/build/
+
+# macOS
+.DS_Store
