@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include "ha.h"
 
+#include <errno.h>
 #include <netdb.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -12,6 +13,15 @@
 #include <unistd.h>
 
 #define POLL_MS 3000
+/* Échecs consécutifs tolérés avant d'afficher « injoignable » : le Wi-Fi de
+ * l'iPad perd une requête de temps en temps, sans que HA soit en cause. */
+#define OFFLINE_AFTER 3
+
+/* Codes d'erreur de http(), en plus des codes HTTP. */
+#define E_RESOLVE  -1
+#define E_CONNECT  -2
+#define E_SEND     -3
+#define E_RECV     -4
 
 static pthread_t worker;
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
@@ -19,6 +29,7 @@ static pthread_cond_t wake = PTHREAD_COND_INITIALIZER;
 static ha_state_t state;
 static bool stop_flag;
 static bool toggle_pending;
+static int failures;
 
 static const char * cfg(const char * key, const char * fallback)
 {
@@ -28,23 +39,24 @@ static const char * cfg(const char * key, const char * fallback)
 
 /* ---------- HTTP ---------- */
 
-/* Envoie une requête, met le corps de la réponse dans out. Renvoie le code HTTP, ou -1. */
-static int http(const char * method, const char * path, const char * body, char * out, size_t out_len)
+/* Envoie une requête, met le corps de la réponse dans out.
+ * Renvoie le code HTTP, ou un code E_* négatif. */
+static int http_once(const char * method, const char * path, const char * body, char * out, size_t out_len)
 {
     const char * host = cfg("HA_HOST", NULL);
     const char * port = cfg("HA_PORT", "8123");
     const char * token = cfg("HA_TOKEN", "");
-    if(!host) return -1;
+    if(!host) return E_RESOLVE;
 
     struct addrinfo hints = {0}, * res = NULL;
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
-    if(getaddrinfo(host, port, &hints, &res) != 0 || !res) return -1;
+    if(getaddrinfo(host, port, &hints, &res) != 0 || !res) return E_RESOLVE;
 
     int fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
     if(fd < 0) {
         freeaddrinfo(res);
-        return -1;
+        return E_CONNECT;
     }
     struct timeval tv = {.tv_sec = 4};
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
@@ -53,7 +65,7 @@ static int http(const char * method, const char * path, const char * body, char 
     freeaddrinfo(res);
     if(!ok) {
         close(fd);
-        return -1;
+        return E_CONNECT;
     }
 
     char req[1024];
@@ -63,7 +75,7 @@ static int http(const char * method, const char * path, const char * body, char 
                      method, path, host, token, body ? strlen(body) : 0, body ? body : "");
     if(n <= 0 || (size_t)n >= sizeof req || write(fd, req, n) != n) {
         close(fd);
-        return -1;
+        return E_SEND;
     }
 
     static char buf[16384];
@@ -73,12 +85,43 @@ static int http(const char * method, const char * path, const char * body, char 
     buf[len] = '\0';
     close(fd);
 
-    int code = -1;
-    if(sscanf(buf, "HTTP/1.%*d %d", &code) != 1) return -1;
+    int code = E_RECV;
+    if(sscanf(buf, "HTTP/1.%*d %d", &code) != 1) return E_RECV;
     const char * b = strstr(buf, "\r\n\r\n");
     if(out && out_len) {
         snprintf(out, out_len, "%s", b ? b + 4 : "");
     }
+    return code;
+}
+
+static const char * http_err(int code)
+{
+    switch(code) {
+        case E_RESOLVE: return "adresse introuvable";
+        case E_CONNECT: return "connexion refusée ou délai dépassé";
+        case E_SEND:    return "envoi impossible";
+        case E_RECV:    return "pas de réponse";
+        default:        return "réponse HTTP inattendue";
+    }
+}
+
+/* Une nouvelle tentative après une courte pause si la première échoue sur le réseau.
+ * Les erreurs HTTP (401, 404…) ne sont pas réessayées : elles ne changeraient pas. */
+static int http(const char * method, const char * path, const char * body, char * out, size_t out_len)
+{
+    int code = http_once(method, path, body, out, out_len);
+    if(code < 0) {
+        int first = code;
+        struct timespec pause = {.tv_sec = 0, .tv_nsec = 300000000L};
+        nanosleep(&pause, NULL);
+        code = http_once(method, path, body, out, out_len);
+        if(code < 0)
+            fprintf(stderr, "ha: %s %s : %s, puis %s (errno %d)\n", method, path,
+                    http_err(first), http_err(code), errno);
+    }
+    if(code >= 0 && code != 200)
+        fprintf(stderr, "ha: %s %s : HTTP %d%s\n", method, path, code,
+                code == 401 ? " (jeton refusé)" : code == 404 ? " (entité inconnue)" : "");
     return code;
 }
 
@@ -131,9 +174,25 @@ static void poll_once(void)
                                     s.sensor_name, sizeof s.sensor_name, s.sensor_unit, sizeof s.sensor_unit);
 
     pthread_mutex_lock(&lock);
-    s.online = ok;
-    s.version = state.version + 1;
-    state = s;
+    if(ok) {
+        if(failures >= OFFLINE_AFTER) fprintf(stderr, "ha: de nouveau joignable\n");
+        failures = 0;
+        /* Un appui pendant le relevé a déjà basculé l'état à l'écran : on
+         * garde ce retour visuel, le relevé suivant dira la vérité. */
+        if(toggle_pending) s.light_on = state.light_on;
+        s.online = true;
+        s.version = state.version + 1;
+        state = s;
+    }
+    else {
+        failures++;
+        if(failures == OFFLINE_AFTER) fprintf(stderr, "ha: injoignable après %d échecs\n", failures);
+        /* Les dernières valeurs connues restent affichées. */
+        if(failures >= OFFLINE_AFTER && state.online) {
+            state.online = false;
+            state.version++;
+        }
+    }
     pthread_mutex_unlock(&lock);
 }
 
