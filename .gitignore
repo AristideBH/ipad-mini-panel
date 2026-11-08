@@ -17,3 +17,7 @@ app/target/build/
 
 # macOS
 .DS_Store
+
+# Application
+app/build-*/
+app/panel.env

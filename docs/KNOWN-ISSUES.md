@@ -7,6 +7,11 @@
 - **`reboot` éteint** au lieu de redémarrer.
 - **512 Mo de RAM.** L'interface doit rester légère.
 
+## Rencontré sur Ubuntu
+
+- **SSH refusé, « Permission denied (publickey) ».** Ubuntu crée les fichiers avec un umask `0002` : l'overlay de Cascadia sort avec `/root` en `drwxrwxr-x`, et dropbear refuse toute clé si le dossier personnel est modifiable par le groupe. Correction : `umask 022` dans `~/.bashrc`, puis `./cascadia a5 build` et un nouveau boot. À signaler chez Cascadia.
+- **`newgrp docker`** ne vaut que pour le terminal courant. Préférer un redémarrage après l'ajout au groupe `docker`.
+
 ## Retours d'un autre utilisateur
 
 Un iPad mini 1 tourne déjà en écran de statut permanent, en iOS 9.3.5, kDFU et RAM ([issue #1](https://github.com/rzxvx/Project-Cascadia/issues/1)). Il est jugé stable, avec trois réserves :

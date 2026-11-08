@@ -10,10 +10,10 @@ iOS reste installé et intact. Linux démarre en RAM depuis un iOS 9.3.5 jailbre
 |---|---|
 | Jailbreak permanent (Carbon + iocaste) | fait |
 | OpenSSH sur l'iPad | fait |
-| Premier boot de Linux depuis le Mac | en cours, voir [docs/MAC-QUICKSTART.md](docs/MAC-QUICKSTART.md) |
-| Hôte Ubuntu en dual boot | à faire |
-| Image Alpine minimale avec démarrage auto de l'appli | à faire |
-| Application LVGL | à faire |
+| Hôte Ubuntu 26.04 en dual boot | fait |
+| Premier boot de Linux (kDFU, RAM, sans bureau) | fait : SSH, tactile, Wi-Fi, 2 cœurs |
+| Application LVGL | squelette, voir [docs/APP.md](docs/APP.md) |
+| Image Alpine avec démarrage auto de l'appli | à faire |
 | Pi Zero 2 W comme hôte permanent | à évaluer |
 
 ## Comment ça démarre
@@ -57,7 +57,8 @@ Cascadia est cloné dans `cascadia/` sans être suivi. Une fois le premier boot 
 
 ## Documents
 
-- [docs/MAC-QUICKSTART.md](docs/MAC-QUICKSTART.md) : premier boot depuis un Mac Apple Silicon
+- [docs/MAC-QUICKSTART.md](docs/MAC-QUICKSTART.md) : premier boot, écrit pour un Mac, valable sous Ubuntu à quelques détails près
+- [docs/APP.md](docs/APP.md) : l'application LVGL, simulateur et déploiement
 - [jailbreak/README.md](jailbreak/README.md) : le jailbreak de l'iPad, étape par étape
 - [docs/JOURNAL.md](docs/JOURNAL.md) : journal des essais
 - [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md) : limites et retours d'autres utilisateurs
