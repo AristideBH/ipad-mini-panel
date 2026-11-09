@@ -34,7 +34,9 @@ set(LV_CONF_BUILD_DISABLE_THORVG_INTERNAL ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(lvgl)
 target_compile_definitions(lvgl PUBLIC ${PANEL_DEFS})
 
-add_executable(panel src/main.c src/ui.c src/ha.c)
+# Polices Montserrat Latin-1 + symboles LVGL, générées par scripts/gen-fonts.sh
+file(GLOB PANEL_FONTS ${CMAKE_CURRENT_SOURCE_DIR}/src/fonts/*.c)
+add_executable(panel src/main.c src/ui.c src/ha.c ${PANEL_FONTS})
 target_compile_definitions(panel PRIVATE ${PANEL_DEFS})
 target_compile_options(panel PRIVATE -Wall -Wextra)
 target_link_libraries(panel PRIVATE lvgl)

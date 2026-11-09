@@ -28,7 +28,7 @@ static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t wake = PTHREAD_COND_INITIALIZER;
 static ha_state_t state;
 static bool stop_flag;
-static bool toggle_pending;
+static unsigned press_mask;      /* cartes à basculer ou déclencher */
 static int failures;
 
 static const char * cfg(const char * key, const char * fallback)
@@ -143,44 +143,127 @@ static bool json_str(const char * json, const char * key, char * out, size_t out
     return true;
 }
 
-static bool fetch_entity(const char * entity, char * st, size_t st_len,
-                         char * name, size_t name_len, char * unit, size_t unit_len)
+
+/* ---------- Configuration des cartes ---------- */
+
+static const char * domain_of(const char * entity, char * out, size_t len)
 {
-    char path[160], body[8192];
-    snprintf(path, sizeof path, "/api/states/%s", entity);
-    if(http("GET", path, NULL, body, sizeof body) != 200) return false;
-    if(!json_str(body, "state", st, st_len)) return false;
-    if(!json_str(body, "friendly_name", name, name_len)) snprintf(name, name_len, "%s", entity);
-    if(unit && !json_str(body, "unit_of_measurement", unit, unit_len)) unit[0] = '\0';
-    return true;
+    const char * dot = strchr(entity, '.');
+    size_t n = dot ? (size_t)(dot - entity) : strlen(entity);
+    if(n >= len) n = len - 1;
+    memcpy(out, entity, n);
+    out[n] = '\0';
+    return out;
 }
 
-/* ---------- Boucle du thread ---------- */
+static ha_card_kind_t kind_of(const char * entity)
+{
+    char d[32];
+    domain_of(entity, d, sizeof d);
+    static const char * toggles[] = {"light", "switch", "fan", "input_boolean", "automation", "cover", NULL};
+    static const char * actions[] = {"scene", "script", "button", "input_button", NULL};
+    for(int i = 0; toggles[i]; i++) if(!strcmp(d, toggles[i])) return HA_CARD_TOGGLE;
+    for(int i = 0; actions[i]; i++) if(!strcmp(d, actions[i])) return HA_CARD_ACTION;
+    return HA_CARD_VALUE;
+}
+
+/* Service à appeler pour un appui, selon le domaine. */
+static void service_of(const char * entity, char * out, size_t len)
+{
+    char d[32];
+    domain_of(entity, d, sizeof d);
+    if(!strcmp(d, "scene") || !strcmp(d, "script")) snprintf(out, len, "/api/services/%s/turn_on", d);
+    else if(!strcmp(d, "button") || !strcmp(d, "input_button")) snprintf(out, len, "/api/services/%s/press", d);
+    else if(!strcmp(d, "cover")) snprintf(out, len, "/api/services/cover/toggle");
+    else snprintf(out, len, "/api/services/homeassistant/toggle");
+}
+
+static bool is_on(const char * st)
+{
+    return !strcmp(st, "on") || !strcmp(st, "open") || !strcmp(st, "opening") || !strcmp(st, "home");
+}
+
+static void add_card(ha_state_t * s, const char * spec)
+{
+    while(*spec == ' ') spec++;
+    if(!*spec || s->count >= HA_MAX_CARDS) return;
+    ha_card_t * c = &s->cards[s->count++];
+    memset(c, 0, sizeof *c);
+
+    const char * eq = strchr(spec, '=');
+    size_t n = eq ? (size_t)(eq - spec) : strlen(spec);
+    while(n && spec[n - 1] == ' ') n--;
+    if(n >= sizeof c->entity) n = sizeof c->entity - 1;
+    memcpy(c->entity, spec, n);
+    c->entity[n] = '\0';
+
+    if(eq && eq[1]) {
+        snprintf(c->name, sizeof c->name, "%s", eq + 1);
+        c->name_fixed = true;
+    }
+    else {
+        strncpy(c->name, c->entity, sizeof c->name - 1);
+        c->name[sizeof c->name - 1] = '\0';
+    }
+    c->kind = kind_of(c->entity);
+    snprintf(c->state, sizeof c->state, "--");
+}
+
+static void parse_cards(ha_state_t * s, const char * list)
+{
+    char buf[1024];
+    snprintf(buf, sizeof buf, "%s", list);
+    char * save = NULL;
+    for(char * tok = strtok_r(buf, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) add_card(s, tok);
+}
+
+/* ---------- Relevés ---------- */
+
+/* Renvoie le code HTTP (ou E_*). Remplit la carte si 200. */
+static int fetch_card(ha_card_t * c)
+{
+    char path[160], body[8192];
+    snprintf(path, sizeof path, "/api/states/%s", c->entity);
+    int code = http("GET", path, NULL, body, sizeof body);
+    if(code != 200) return code;
+
+    char st[HA_TEXT];
+    if(!json_str(body, "state", st, sizeof st)) return E_RECV;
+    snprintf(c->state, sizeof c->state, "%s", st);
+    c->on = is_on(st);
+    if(!c->name_fixed && !json_str(body, "friendly_name", c->name, sizeof c->name))
+        snprintf(c->name, sizeof c->name, "%s", c->entity);
+    if(!json_str(body, "unit_of_measurement", c->unit, sizeof c->unit)) c->unit[0] = '\0';
+    c->known = true;
+    return code;
+}
 
 static void poll_once(void)
 {
-    const char * light = cfg("HA_LIGHT", NULL);
-    const char * sensor = cfg("HA_SENSOR", NULL);
     ha_state_t s;
     pthread_mutex_lock(&lock);
     s = state;
     pthread_mutex_unlock(&lock);
 
-    bool ok = true;
-    char st[HA_TEXT];
-    if(light) ok &= fetch_entity(light, st, sizeof st, s.light_name, sizeof s.light_name, NULL, 0);
-    if(light && ok) s.light_on = strcmp(st, "on") == 0;
-    if(sensor) ok &= fetch_entity(sensor, s.sensor_value, sizeof s.sensor_value,
-                                    s.sensor_name, sizeof s.sensor_name, s.sensor_unit, sizeof s.sensor_unit);
+    bool reached = false, auth = false;
+    for(int i = 0; i < s.count; i++) {
+        int code = fetch_card(&s.cards[i]);
+        if(code >= 0) reached = true;
+        if(code == 401) auth = true;
+        s.cards[i].missing = code == 404;
+        if(code == 401) break;   /* inutile d'insister avec un jeton refusé */
+    }
 
     pthread_mutex_lock(&lock);
-    if(ok) {
+    if(reached) {
         if(failures >= OFFLINE_AFTER) fprintf(stderr, "ha: de nouveau joignable\n");
         failures = 0;
         /* Un appui pendant le relevé a déjà basculé l'état à l'écran : on
          * garde ce retour visuel, le relevé suivant dira la vérité. */
-        if(toggle_pending) s.light_on = state.light_on;
+        for(int i = 0; i < s.count; i++)
+            if(press_mask & (1u << i)) s.cards[i].on = state.cards[i].on;
         s.online = true;
+        s.auth_error = auth;
         s.version = state.version + 1;
         state = s;
     }
@@ -199,11 +282,29 @@ static void poll_once(void)
 static void demo_once(void)
 {
     pthread_mutex_lock(&lock);
-    double t = 20.5 + (double)(time(NULL) % 30) / 10.0;
-    snprintf(state.sensor_value, sizeof state.sensor_value, "%.1f", t);
+    for(int i = 0; i < state.count; i++) {
+        ha_card_t * c = &state.cards[i];
+        if(c->kind == HA_CARD_VALUE) {
+            double v = 19.5 + i + (double)(time(NULL) % 30) / 10.0;
+            snprintf(c->state, sizeof c->state, "%.1f", v);
+            if(!c->unit[0]) snprintf(c->unit, sizeof c->unit, "°C");
+        }
+        else if(c->kind == HA_CARD_TOGGLE) {
+            snprintf(c->state, sizeof c->state, "%s", c->on ? "on" : "off");
+        }
+        c->known = true;
+    }
     state.online = true;
     state.version++;
     pthread_mutex_unlock(&lock);
+}
+
+static void send_press(const char * entity)
+{
+    char path[96], body[160];
+    service_of(entity, path, sizeof path);
+    snprintf(body, sizeof body, "{\"entity_id\":\"%.96s\"}", entity);
+    http("POST", path, body, NULL, 0);
 }
 
 static void * run(void * arg)
@@ -219,23 +320,19 @@ static void * run(void * arg)
             pthread_mutex_unlock(&lock);
             break;
         }
-        bool do_toggle = toggle_pending;
-        toggle_pending = false;
+        unsigned mask = press_mask;
+        char pressed[HA_MAX_CARDS][96];
+        int count = state.count;
+        for(int i = 0; i < count; i++) memcpy(pressed[i], state.cards[i].entity, sizeof pressed[i]);
         pthread_mutex_unlock(&lock);
 
-        if(do_toggle) {
-            if(demo) {
-                pthread_mutex_lock(&lock);
-                state.light_on = !state.light_on;
-                state.version++;
-                pthread_mutex_unlock(&lock);
-            }
-            else {
-                char body[160];
-                snprintf(body, sizeof body, "{\"entity_id\":\"%s\"}", cfg("HA_LIGHT", ""));
-                http("POST", "/api/services/homeassistant/toggle", body, NULL, 0);
-            }
-        }
+        if(!demo)
+            for(int i = 0; i < count; i++)
+                if(mask & (1u << i)) send_press(pressed[i]);
+
+        pthread_mutex_lock(&lock);
+        press_mask &= ~mask;
+        pthread_mutex_unlock(&lock);
 
         if(demo) demo_once();
         else poll_once();
@@ -245,7 +342,7 @@ static void * run(void * arg)
         clock_gettime(CLOCK_REALTIME, &until);
         until.tv_sec += POLL_MS / 1000;
         pthread_mutex_lock(&lock);
-        while(!stop_flag && !toggle_pending)
+        while(!stop_flag && !press_mask)
             if(pthread_cond_timedwait(&wake, &lock, &until) != 0) break;
         pthread_mutex_unlock(&lock);
     }
@@ -258,16 +355,20 @@ void ha_start(void)
 {
     memset(&state, 0, sizeof state);
     state.demo = cfg("HA_HOST", NULL) == NULL;
-    if(state.demo) {
-        snprintf(state.light_name, sizeof state.light_name, "Lampe salon");
-        snprintf(state.sensor_name, sizeof state.sensor_name, "Salon");
-        snprintf(state.sensor_unit, sizeof state.sensor_unit, "°C");
+
+    const char * list = cfg("HA_CARDS", NULL);
+    if(list) {
+        parse_cards(&state, list);
     }
     else {
-        snprintf(state.light_name, sizeof state.light_name, "%s", cfg("HA_LIGHT", "-"));
-        snprintf(state.sensor_name, sizeof state.sensor_name, "%s", cfg("HA_SENSOR", "-"));
-        snprintf(state.sensor_value, sizeof state.sensor_value, "--");
+        if(cfg("HA_LIGHT", NULL)) add_card(&state, cfg("HA_LIGHT", NULL));
+        if(cfg("HA_SENSOR", NULL)) add_card(&state, cfg("HA_SENSOR", NULL));
     }
+    if(state.count == 0 && state.demo)
+        parse_cards(&state, "light.salon=Plafonnier,switch.prise=Imprimante 3D,"
+                            "sensor.salon=Salon,sensor.chambre=Chambre,scene.soiree=Soirée,cover.volet=Volet");
+
+    fprintf(stderr, "ha: %d carte(s)%s\n", state.count, state.demo ? ", mode démo" : "");
     pthread_create(&worker, NULL, run, NULL);
 }
 
@@ -287,13 +388,18 @@ void ha_snapshot(ha_state_t * out)
     pthread_mutex_unlock(&lock);
 }
 
-void ha_toggle_light(void)
+void ha_press(int index)
 {
     pthread_mutex_lock(&lock);
-    toggle_pending = true;
-    /* Retour visuel immédiat, corrigé au prochain relevé si HA dit autre chose. */
-    state.light_on = !state.light_on;
-    state.version++;
-    pthread_cond_signal(&wake);
+    if(index >= 0 && index < state.count && state.cards[index].kind != HA_CARD_VALUE) {
+        press_mask |= 1u << index;
+        /* Retour visuel immédiat, corrigé au prochain relevé si HA dit autre chose. */
+        if(state.cards[index].kind == HA_CARD_TOGGLE) {
+            state.cards[index].on = !state.cards[index].on;
+            if(state.demo) snprintf(state.cards[index].state, HA_TEXT, "%s", state.cards[index].on ? "on" : "off");
+        }
+        state.version++;
+        pthread_cond_signal(&wake);
+    }
     pthread_mutex_unlock(&lock);
 }

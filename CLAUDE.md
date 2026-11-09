@@ -13,7 +13,7 @@ Linux (Project Cascadia) sur un iPad mini 1 (A1432), pour en faire un panneau mu
 - `cascadia/` : clone de Project Cascadia (hors git). Commandes : `./cascadia a5` les liste.
 - `firmware/` : IPSW 8.4.1 (hors git), lié depuis `cascadia/`.
 - `app/` : appli LVGL v9.2.2, cibles `sim` (SDL) et `fbdev` (iPad).
-- `scripts/` : `app-sim.sh`, `app-build-ipad.sh`, `app-deploy.sh`, `check-ipsw.sh`.
+- `scripts/` : `app-sim.sh`, `app-build-ipad.sh`, `app-deploy.sh`, `gen-fonts.sh`, `check-ipsw.sh`.
 - `docs/` : `APP.md`, `JOURNAL.md` (à tenir à jour), `KNOWN-ISSUES.md`.
 
 ## Cycle courant

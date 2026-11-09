@@ -9,16 +9,25 @@ Un seul code, deux cibles :
 
 LVGL est épinglé en **v9.2.2** et téléchargé à la compilation. La configuration est dans `app/lv_conf.h`.
 
-## Ce que fait le squelette
+## Ce que fait l'appli
 
 - Heure et date en haut.
-- Une carte **lumière** : un appui bascule l'entité dans Home Assistant.
-- Une carte **capteur** : valeur et unité.
-- Une ligne d'état en bas : mode démo, Home Assistant joignable ou non.
+- Une grille de cartes, une par entité de `HA_CARDS`, sur deux colonnes. Elle défile si les cartes dépassent l'écran (16 au plus).
+- Une ligne d'état en bas : mode démo, connecté, injoignable, jeton refusé.
+
+| Domaine | Carte | Au toucher |
+|---|---|---|
+| `light`, `switch`, `fan`, `input_boolean`, `automation` | bascule, Allumé / Éteint | `homeassistant.toggle` |
+| `cover` | bascule, Ouvert / Fermé | `cover.toggle` |
+| `sensor`, `binary_sensor`, autres | valeur et unité | rien |
+| `scene`, `script` | lancement | `scene.turn_on`, `script.turn_on` |
+| `button`, `input_button` | lancement | `button.press`, `input_button.press` |
+
+Une entité qui n'existe pas dans Home Assistant affiche « Entité inconnue » en rouge.
 
 Sans `HA_HOST`, l'appli tourne en **mode démo** avec des valeurs simulées. Pratique pour travailler l'interface sans Home Assistant.
 
-Le client Home Assistant passe par l'API REST en HTTP simple sur le réseau local, avec un jeton longue durée. Il relève les états toutes les 3 secondes dans un thread à part, donc l'interface ne se fige jamais sur le réseau.
+Le client passe par l'API REST en HTTP simple sur le réseau local, avec un jeton longue durée. Il relève les états toutes les 3 secondes dans un thread à part, donc l'interface ne se fige jamais sur le réseau. Une requête perdue est retentée une fois, et « injoignable » ne s'affiche qu'après 3 relevés ratés d'affilée.
 
 ## Réglages
 
@@ -26,7 +35,7 @@ Le client Home Assistant passe par l'API REST en HTTP simple sur le réseau loca
 cp app/panel.env.example app/panel.env
 ```
 
-Puis remplir `HA_HOST`, `HA_TOKEN`, `HA_LIGHT` et `HA_SENSOR`. Le jeton se crée dans Home Assistant, Profil, Sécurité, Jetons d'accès longue durée. `app/panel.env` reste hors de git.
+Puis remplir `HA_HOST`, `HA_TOKEN` et `HA_CARDS`. `HA_HOST` est l'adresse locale de Home Assistant, sans `http://` : l'appli ne parle pas HTTPS. Le jeton se crée dans Home Assistant, Profil, Sécurité, Jetons d'accès longue durée. `app/panel.env` reste hors de git.
 
 ## Développer sur le PC
 
@@ -59,17 +68,19 @@ scripts/app-deploy.sh --bg     # en arrière-plan
 scripts/app-deploy.sh --stop   # arrêter
 ```
 
+Modifier `panel.env` ne demande pas de recompiler : `scripts/app-deploy.sh --bg` le renvoie et relance l'appli. Le script arrête aussi toute instance précédente, et l'appli refuse de démarrer si une autre tourne déjà.
+
 Le script arrête le clavier à l'écran (`fbkeyboard`), qui dessine dans le même framebuffer. L'appli met la console en mode graphique pendant qu'elle tourne et la rend en quittant.
 
 ## Limites actuelles
 
-- **Pas d'accents à l'écran.** Les polices intégrées de LVGL s'arrêtent à l'ASCII, plus le signe degré. Prochaine étape : générer une police Latin-1 avec `lv_font_conv`.
+- **Polices** : Montserrat en Latin-1 (accents français, €, guillemets) aux tailles 16, 20, 28 et 48, générées dans `app/src/fonts/` par `scripts/gen-fonts.sh`. Un caractère hors de ce jeu (emoji, alphabets non latins) ne s'affiche pas.
 - **Rien ne survit au redémarrage de l'iPad** : l'appli et `panel.env` sont en RAM. Les intégrer à l'image passera par le dossier `keep/` de Cascadia.
 - **Rendu logiciel** sur le framebuffer. Le GPU pourra venir ensuite, via SDL ou Wayland.
 
 ## Vérifié
 
 - Compilation de la cible `fbdev` en x86_64, statique.
-- Rendu hors écran de l'interface, en mode démo et contre un faux serveur Home Assistant (lecture des états, du nom, de l'unité, jeton envoyé).
-
-Pas encore vérifié : le simulateur SDL, la compilation ARM et le tactile sur l'iPad.
+- Rendu hors écran, en mode démo et contre un faux serveur Home Assistant : noms accentués, nom imposé, volet, entité inconnue.
+- Appuis : le bon service est appelé selon le domaine, un appui sur un capteur ne fait rien.
+- Sur l'iPad, par l'utilisateur : compilation ARM, affichage, tactile, bascule d'une lumière.
