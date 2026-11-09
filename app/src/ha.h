@@ -67,5 +67,29 @@ void ha_press(int index);
 void ha_tile_move(int index, int dir);         /* dir<0 : vers le haut, dir>0 : vers le bas */
 void ha_tile_toggle_hidden(int index);
 void ha_tile_cycle_icon(int index);
+void ha_tile_remove(int index);
+/* Ajoute une carte pour cette entité si elle n'y est pas déjà. Sans effet si
+ * state.count a atteint HA_MAX_CARDS ou si l'entité y figure déjà. */
+void ha_tile_add(const char * entity);
+
+/* ---------- Entités disponibles côté HA, pour « Ajouter » en Réglages ----------
+ * Limité aux domaines actionnables (bascule/action) : les capteurs restent à
+ * ajouter via HA_CARDS, trop nombreux pour une liste sans recherche (436
+ * entités chez un utilisateur réel, dont 316 capteurs à eux seuls).
+ *
+ * Le relevé (une requête /api/template par domaine, quelques secondes en
+ * tout) tourne dans le thread existant : l'interface ne se bloque jamais,
+ * elle relit le résultat une fois prêt. */
+typedef struct {
+    char entity[96];
+    char name[HA_TEXT];
+} ha_browse_entry_t;
+
+#define HA_BROWSE_MAX 128
+
+void ha_browse_request(void);
+/* *ready devient vrai dès que le relevé demandé est terminé (jusqu'au
+ * prochain ha_browse_request()). Renvoie le nombre d'entités copiées dans out. */
+int ha_browse_result(ha_browse_entry_t out[], int max, bool * ready);
 
 #endif

@@ -33,6 +33,11 @@ static unsigned press_mask;      /* cartes à basculer ou déclencher */
 static bool tiles_dirty;         /* réglages (ordre/icône/masquage) à sauvegarder côté hôte */
 static int failures;
 
+static bool browse_requested;
+static bool browse_ready;
+static int browse_count;
+static ha_browse_entry_t browse_result[HA_BROWSE_MAX];
+
 static const char * cfg(const char * key, const char * fallback)
 {
     const char * v = getenv(key);
@@ -366,6 +371,70 @@ static void save_tile_prefs(void)
     tiles_save(prefs, n);
 }
 
+/* Une ligne par entité, sans tableau ni virgule à gérer (voir ha_browse_fetch) :
+ * {"entity_id":"...","name":"..."}\n{"entity_id":"...","name":"..."}\n… */
+static void parse_browse_lines(const char * body, ha_browse_entry_t out[], int * count, int max)
+{
+    const char * p = body;
+    while(*p && *count < max) {
+        const char * eol = strchr(p, '\n');
+        size_t n = eol ? (size_t)(eol - p) : strlen(p);
+        if(n > 2 && n < 256) {
+            char line[256];
+            memcpy(line, p, n);
+            line[n] = '\0';
+            ha_browse_entry_t * e = &out[*count];
+            if(json_str(line, "entity_id", e->entity, sizeof e->entity) &&
+               json_str(line, "name", e->name, sizeof e->name))
+                (*count)++;
+        }
+        if(!eol) break;
+        p = eol + 1;
+    }
+}
+
+/* Domaines actionnables seulement (voir ha.h) : les capteurs restent à
+ * ajouter via HA_CARDS. Une requête /api/template par domaine, chacune ne
+ * boucle que sur son propre domaine (gabarit simple, pas de virgules à
+ * placer correctement entre plusieurs boucles imbriquées). */
+static void ha_browse_fetch(ha_browse_entry_t out[], int max, int * count)
+{
+    static const char * domains[] = {
+        "light", "switch", "fan", "cover", "automation",
+        "input_boolean", "scene", "script", "button", "input_button",
+    };
+    *count = 0;
+    for(unsigned d = 0; d < sizeof domains / sizeof domains[0] && *count < max; d++) {
+        char tmpl[192], req[256], resp[8192];
+        snprintf(tmpl, sizeof tmpl,
+                "{%% for s in states.%s %%}{\\\"entity_id\\\":\\\"{{ s.entity_id }}\\\","
+                "\\\"name\\\":\\\"{{ s.name }}\\\"}\\n{%% endfor %%}",
+                domains[d]);
+        snprintf(req, sizeof req, "{\"template\":\"%s\"}", tmpl);
+        if(http("POST", "/api/template", req, resp, sizeof resp) == 200)
+            parse_browse_lines(resp, out, count, max);
+    }
+}
+
+void ha_browse_request(void)
+{
+    pthread_mutex_lock(&lock);
+    browse_requested = true;
+    browse_ready = false;
+    pthread_cond_signal(&wake);
+    pthread_mutex_unlock(&lock);
+}
+
+int ha_browse_result(ha_browse_entry_t out[], int max, bool * ready)
+{
+    pthread_mutex_lock(&lock);
+    *ready = browse_ready;
+    int n = browse_ready ? (browse_count < max ? browse_count : max) : 0;
+    if(n) memcpy(out, browse_result, sizeof(ha_browse_entry_t) * (size_t)n);
+    pthread_mutex_unlock(&lock);
+    return n;
+}
+
 static void * run(void * arg)
 {
     (void)arg;
@@ -401,15 +470,29 @@ static void * run(void * arg)
         press_mask &= ~mask;
         bool save_needed = tiles_dirty;
         tiles_dirty = false;
+        bool browse_needed = browse_requested;
+        browse_requested = false;
         pthread_mutex_unlock(&lock);
         if(save_needed) save_tile_prefs();
+        if(browse_needed) {
+            ha_browse_entry_t found[HA_BROWSE_MAX];
+            int n = 0;
+            ha_browse_fetch(found, HA_BROWSE_MAX, &n);
+            pthread_mutex_lock(&lock);
+            memcpy(browse_result, found, sizeof(ha_browse_entry_t) * (size_t)n);
+            browse_count = n;
+            browse_ready = true;
+            pthread_mutex_unlock(&lock);
+        }
 
-        /* Attend POLL_MS, ou moins si l'interface demande une action. */
+        /* Attend POLL_MS, ou moins si l'interface demande une action : le
+         * réveil par signal ne sert à rien si la condition ne regarde que
+         * press_mask, les deux autres indicateurs doivent aussi la rompre. */
         struct timespec until;
         clock_gettime(CLOCK_REALTIME, &until);
         until.tv_sec += POLL_MS / 1000;
         pthread_mutex_lock(&lock);
-        while(!stop_flag && !press_mask)
+        while(!stop_flag && !press_mask && !tiles_dirty && !browse_requested)
             if(pthread_cond_timedwait(&wake, &lock, &until) != 0) break;
         pthread_mutex_unlock(&lock);
     }
@@ -508,6 +591,39 @@ void ha_tile_cycle_icon(int index)
     if(index >= 0 && index < state.count) {
         const char * next = tiles_icon_next(state.cards[index].icon);
         snprintf(state.cards[index].icon, sizeof state.cards[index].icon, "%s", next);
+        state.version++;
+        tiles_dirty = true;
+        pthread_cond_signal(&wake);
+    }
+    pthread_mutex_unlock(&lock);
+}
+
+void ha_tile_remove(int index)
+{
+    pthread_mutex_lock(&lock);
+    if(index >= 0 && index < state.count) {
+        for(int i = index; i < state.count - 1; i++) state.cards[i] = state.cards[i + 1];
+        state.count--;
+        state.version++;
+        tiles_dirty = true;
+        pthread_cond_signal(&wake);
+    }
+    pthread_mutex_unlock(&lock);
+}
+
+void ha_tile_add(const char * entity)
+{
+    pthread_mutex_lock(&lock);
+    bool exists = false;
+    for(int i = 0; i < state.count; i++)
+        if(!strcmp(state.cards[i].entity, entity)) { exists = true; break; }
+    if(!exists && state.count < HA_MAX_CARDS) {
+        ha_card_t * c = &state.cards[state.count++];
+        memset(c, 0, sizeof *c);
+        snprintf(c->entity, sizeof c->entity, "%s", entity);
+        snprintf(c->name, sizeof c->name, "%s", entity);   /* affiné par le prochain relevé */
+        c->kind = kind_of(entity);
+        snprintf(c->state, sizeof c->state, "--");
         state.version++;
         tiles_dirty = true;
         pthread_cond_signal(&wake);

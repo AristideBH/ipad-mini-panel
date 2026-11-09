@@ -59,7 +59,9 @@ L'appli reprend les boutons à `p105-keys`, le programme de Cascadia qui les gè
 
 ## Page Réglages (disposition des cartes)
 
-Un bouton engrenage en haut à droite de l'écran principal ouvre une page qui liste les cartes de `HA_CARDS` : icône (touche pour changer parmi un petit jeu fixe), flèches pour réordonner, œil pour masquer/afficher sur la grille principale. Pas d'ajout de nouvelle entité ici, ni de nom personnalisé : ça reste dans `HA_CARDS` et `panel.env`, côté hôte.
+Un bouton engrenage en haut à droite de l'écran principal ouvre une page qui liste les cartes de `HA_CARDS` : icône (touche pour changer parmi un petit jeu fixe), flèches pour réordonner, œil pour masquer/afficher sur la grille principale, corbeille pour retirer. Pas de nom personnalisé depuis l'appli : ça reste dans `HA_CARDS`, côté hôte.
+
+Le bouton **Ajouter** interroge Home Assistant (`/api/template`, un appel par domaine) et liste les entités des domaines actionnables — lumières, prises, ventilateurs, volets, automatisations, scènes, scripts, boutons. Les capteurs n'y figurent pas : chez un utilisateur réel, ils représentaient 316 entités sur 436, bien trop pour une liste sans recherche ; ils restent à ajouter via `HA_CARDS`. Toucher **+** sur une entité l'ajoute à la grille principale.
 
 Chaque changement est sauvegardé dans `app/panel-tiles.json`, via un petit service HTTP sur l'hôte (`scripts/config-server.sh`, Python 3 seul, sans dépendance) — sans lui, l'appli garde simplement l'ordre et l'affichage de `HA_CARDS` tels quels, rien de plus :
 

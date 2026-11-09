@@ -50,7 +50,13 @@ static lv_obj_t * page_main;
 static lv_obj_t * page_test;
 static lv_obj_t * page_settings;
 static lv_obj_t * settings_list;   /* conteneur des lignes, reconstruit à chaque ouverture */
-static lv_obj_t * lbl_perf;  /* compteur i/s et CPU de LVGL, créé une fois pour toutes */
+static lv_obj_t * settings_help;
+static lv_obj_t * settings_add_btn;
+static lv_obj_t * settings_add_lbl;   /* l'étiquette DANS le bouton : lv_label_set_text() va sur elle, pas sur le bouton */
+static bool settings_browsing;     /* liste des cartes (faux) ou navigateur « Ajouter » (vrai) */
+static bool settings_browse_ready; /* dernier état connu du relevé en cours, pour ne pas reconstruire à chaque tick */
+static ha_browse_entry_t settings_browse_entries[HA_BROWSE_MAX];
+static int settings_browse_count;
 static lv_obj_t * lbl_fps;
 static lv_obj_t * lbl_time;
 static lv_obj_t * lbl_date;
@@ -117,7 +123,6 @@ static void slide_done(lv_anim_t * a)
     lv_draw_buf_destroy(tr.snap_from);
     lv_draw_buf_destroy(tr.snap_to);
     lv_obj_remove_flag(tr.to, LV_OBJ_FLAG_HIDDEN);
-    if(tr.to == page_main && lbl_perf) lv_obj_add_flag(lbl_perf, LV_OBJ_FLAG_HIDDEN);
     tr.running = false;
 }
 
@@ -166,7 +171,6 @@ static void show_page(lv_obj_t * from, lv_obj_t * to, bool forward)
     tr.frames = 0;
     tr.t0 = lv_tick_get();
     slide_exec(NULL, 0);
-    if(to == page_test && lbl_perf) lv_obj_remove_flag(lbl_perf, LV_OBJ_FLAG_HIDDEN);
 
     lv_anim_t a;
     lv_anim_init(&a);
@@ -206,6 +210,7 @@ static void refresh_settings(void);   /* définie plus bas, avec le reste de la 
 
 static void open_settings(void)
 {
+    settings_browsing = false;
     refresh_settings();
     show_page(page_main, page_settings, true);
 }
@@ -344,6 +349,33 @@ static void on_tile_icon(lv_event_t * e)
     refresh_ha();
 }
 
+static void on_tile_remove(lv_event_t * e)
+{
+    ha_tile_remove((int)(intptr_t)lv_event_get_user_data(e));
+    refresh_settings();
+    refresh_ha();
+}
+
+static void on_add_toggle(lv_event_t * e)
+{
+    (void)e;
+    settings_browsing = !settings_browsing;
+    if(settings_browsing) {
+        ha_browse_request();
+        settings_browse_ready = false;
+    }
+    refresh_settings();
+}
+
+static void on_browse_add(lv_event_t * e)
+{
+    int i = (int)(intptr_t)lv_event_get_user_data(e);
+    if(i >= 0 && i < settings_browse_count) ha_tile_add(settings_browse_entries[i].entity);
+    settings_browsing = false;
+    refresh_settings();
+    refresh_ha();
+}
+
 static void build_settings_row(int i, const ha_card_t * c)
 {
     lv_obj_t * row = lv_obj_create(settings_list);
@@ -374,14 +406,60 @@ static void build_settings_row(int i, const ha_card_t * c)
 
     lv_obj_t * hide = settings_btn(row, c->hidden ? LV_SYMBOL_EYE_CLOSE : LV_SYMBOL_EYE_OPEN);
     lv_obj_add_event_cb(hide, on_tile_hide, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+
+    if(c->kind != HA_CARD_PAGE) {   /* la page de test n'est pas une entité HA : rien à retirer */
+        lv_obj_t * del = settings_btn(row, LV_SYMBOL_TRASH);
+        lv_obj_add_event_cb(del, on_tile_remove, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+    }
+}
+
+static void build_browse_row(int i, const ha_browse_entry_t * e)
+{
+    lv_obj_t * row = lv_obj_create(settings_list);
+    lv_obj_set_size(row, lv_pct(100), 72);
+    lv_obj_set_style_bg_color(row, COL_CARD, 0);
+    lv_obj_set_style_border_width(row, 0, 0);
+    lv_obj_set_style_radius(row, 16, 0);
+    lv_obj_set_style_pad_hor(row, 16, 0);
+    lv_obj_set_style_pad_gap(row, 10, 0);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t * name = make_label(row, &panel_font_20, COL_TEXT);
+    lv_obj_set_flex_grow(name, 1);
+    lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+    lv_label_set_text(name, e->name[0] ? e->name : e->entity);
+
+    lv_obj_t * add = settings_btn(row, LV_SYMBOL_PLUS);
+    lv_obj_add_event_cb(add, on_browse_add, LV_EVENT_CLICKED, (void *)(intptr_t)i);
 }
 
 static void refresh_settings(void)
 {
-    static ha_state_t s;   /* ~3 Ko, hors de la pile */
-    ha_snapshot(&s);
     lv_obj_clean(settings_list);
-    for(int i = 0; i < s.count; i++) build_settings_row(i, &s.cards[i]);
+
+    if(settings_browsing) {
+        lv_label_set_text(settings_add_lbl, LV_SYMBOL_CLOSE "  Annuler");
+        bool ready;
+        settings_browse_count = ha_browse_result(settings_browse_entries, HA_BROWSE_MAX, &ready);
+        settings_browse_ready = ready;
+        lv_label_set_text(settings_help,
+                ready ? (settings_browse_count
+                        ? "Touchez + pour ajouter une carte à la grille principale."
+                        : "Aucune entité disponible (ou Home Assistant injoignable).")
+                      : "Interrogation de Home Assistant…");
+        for(int i = 0; i < settings_browse_count; i++) build_browse_row(i, &settings_browse_entries[i]);
+    }
+    else {
+        lv_label_set_text(settings_add_lbl, LV_SYMBOL_PLUS "  Ajouter");
+        lv_label_set_text(settings_help, "Icône : touche pour changer. Flèches : déplace la carte. "
+                "Œil : affiche ou masque. Corbeille : retire. Ajouter : depuis Home Assistant "
+                "(lumières, prises, volets… pas les capteurs, trop nombreux sans recherche).");
+        static ha_state_t s;   /* ~3 Ko, hors de la pile */
+        ha_snapshot(&s);
+        for(int i = 0; i < s.count; i++) build_settings_row(i, &s.cards[i]);
+    }
 }
 
 static void build_settings_page(lv_obj_t * scr)
@@ -411,15 +489,25 @@ static void build_settings_page(lv_obj_t * scr)
     lv_obj_t * back_lbl = make_label(back, &panel_font_20, COL_TEXT);
     lv_label_set_text(back_lbl, LV_SYMBOL_LEFT "  Retour");
 
+    settings_add_btn = lv_button_create(page_settings);
+    lv_obj_set_style_bg_color(settings_add_btn, COL_CARD, 0);
+    lv_obj_set_style_bg_color(settings_add_btn, COL_PRESSED, LV_STATE_PRESSED);
+    lv_obj_set_style_shadow_width(settings_add_btn, 0, 0);
+    lv_obj_set_style_radius(settings_add_btn, 16, 0);
+    lv_obj_set_style_pad_hor(settings_add_btn, 24, 0);
+    lv_obj_set_style_pad_ver(settings_add_btn, 16, 0);
+    lv_obj_add_flag(settings_add_btn, LV_OBJ_FLAG_IGNORE_LAYOUT);
+    lv_obj_align(settings_add_btn, LV_ALIGN_TOP_RIGHT, 0, 0);
+    lv_obj_add_event_cb(settings_add_btn, on_add_toggle, LV_EVENT_CLICKED, NULL);
+    settings_add_lbl = make_label(settings_add_btn, &panel_font_20, COL_TEXT);
+    lv_label_set_text(settings_add_lbl, LV_SYMBOL_PLUS "  Ajouter");
+
     lv_obj_t * title = make_label(page_settings, &panel_font_48, COL_TEXT);
     lv_label_set_text(title, "Réglages");
 
-    lv_obj_t * help = make_label(page_settings, &panel_font_16, COL_MUTED);
-    lv_obj_set_width(help, lv_pct(100));
-    lv_label_set_long_mode(help, LV_LABEL_LONG_WRAP);
-    lv_label_set_text(help, "Icône : touche pour changer. Flèches : déplace la carte. Œil : "
-                            "affiche ou masque sur l'écran principal. Pas d'ajout de nouvelle "
-                            "entité ici pour l'instant : modifier HA_CARDS côté hôte.");
+    settings_help = make_label(page_settings, &panel_font_16, COL_MUTED);
+    lv_obj_set_width(settings_help, lv_pct(100));
+    lv_label_set_long_mode(settings_help, LV_LABEL_LONG_WRAP);
 
     settings_list = lv_obj_create(page_settings);
     lv_obj_set_width(settings_list, lv_pct(100));
@@ -611,6 +699,16 @@ static void on_tick(lv_timer_t * t)
     (void)t;
     refresh_clock();
     refresh_ha();
+
+    /* Le relevé des entités HA (plusieurs requêtes, pas instantané) tourne en
+     * arrière-plan : on vérifie ici s'il est arrivé, pour afficher la liste
+     * sans que l'utilisateur ait à toucher quoi que ce soit. */
+    if(settings_browsing && !settings_browse_ready &&
+       page_settings && !lv_obj_has_flag(page_settings, LV_OBJ_FLAG_HIDDEN)) {
+        bool ready;
+        ha_browse_result(NULL, 0, &ready);
+        if(ready) refresh_settings();
+    }
 }
 
 void ui_create(void)
@@ -618,16 +716,6 @@ void ui_create(void)
     lv_obj_t * scr = lv_screen_active();
     lv_obj_set_style_bg_color(scr, COL_BG, 0);
     lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
-
-    /* Créée une seule fois : lv_sysmon_show/hide_performance() ne sont pas
-     * conçues pour être rappelées à chaque passage sur la page de test (chaque
-     * appel refait une étiquette, un minuteur et un rappel d'affichage sans
-     * jamais détruire les précédents). On garde la main sur l'étiquette créée
-     * ici et on bascule nous-mêmes son indicateur masqué. */
-    lv_sysmon_show_performance(NULL);
-    lv_obj_t * sys_layer = lv_display_get_layer_sys(NULL);
-    lbl_perf = lv_obj_get_child(sys_layer, lv_obj_get_child_count(sys_layer) - 1);
-    if(lbl_perf) lv_obj_add_flag(lbl_perf, LV_OBJ_FLAG_HIDDEN);   /* montrée seulement sur la page de test */
 
     page_main = lv_obj_create(scr);
     lv_obj_set_size(page_main, lv_pct(100), lv_pct(100));
