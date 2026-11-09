@@ -20,6 +20,8 @@ typedef struct {
     char entity[96];
     char icon[16];   /* clé sémantique ("ampoule", "prise"…), vide = icône par défaut du type */
     bool hidden;
+    int col, row;           /* position dans la grille fixe ; -1 : pas encore placée (auto-placement) */
+    int colspan, rowspan;   /* taille en cellules ; 0 : pas encore connue (2x1 par défaut) */
 } tile_pref_t;
 
 /* Charge les préférences depuis le service hôte. Renvoie le nombre d'entrées

@@ -34,9 +34,9 @@ LV_FONT_DECLARE(panel_font_48)
 #define COL_OK      lv_color_hex(0x4CC38A)
 #define COL_ERR     lv_color_hex(0xE5534B)
 
-#define CARD_H 200
 #define SCREEN_W 768
 #define SLIDE_MS 340
+#define GRID_GAP 24   /* espace entre cellules, en pixels ; même valeur en largeur et en hauteur */
 
 typedef struct {
     ha_card_kind_t kind;
@@ -62,6 +62,7 @@ static lv_obj_t * lbl_time;
 static lv_obj_t * lbl_date;
 static lv_obj_t * lbl_status;
 static lv_obj_t * grid;
+static int32_t cell_w, cell_h;   /* taille d'une cellule, calculée une fois la grille mise en page */
 static card_ui_t cards[HA_MAX_CARDS];
 static int card_count = -1;
 static unsigned shown_version = (unsigned)-1;
@@ -538,7 +539,9 @@ static void build_card(int i, const ha_card_t * c)
     card_ui_t * u = &cards[i];
     u->kind = c->kind;
     u->card = lv_obj_create(grid);
-    lv_obj_set_size(u->card, lv_pct(48), CARD_H);
+    lv_obj_set_pos(u->card, c->col * (cell_w + GRID_GAP), c->row * (cell_h + GRID_GAP));
+    lv_obj_set_size(u->card, c->colspan * cell_w + (c->colspan - 1) * GRID_GAP,
+                             c->rowspan * cell_h + (c->rowspan - 1) * GRID_GAP);
     lv_obj_set_style_bg_color(u->card, COL_CARD, 0);
     lv_obj_set_style_border_width(u->card, 0, 0);
     lv_obj_set_style_radius(u->card, 24, 0);
@@ -578,6 +581,13 @@ static void rebuild_grid(const ha_state_t * s)
 {
     lv_obj_clean(grid);
     memset(cards, 0, sizeof cards);
+
+    lv_obj_update_layout(grid);
+    int32_t gw = lv_obj_get_content_width(grid);
+    int32_t gh = lv_obj_get_content_height(grid);
+    cell_w = (gw - (GRID_COLS - 1) * GRID_GAP) / GRID_COLS;
+    cell_h = (gh - (GRID_ROWS - 1) * GRID_GAP) / GRID_ROWS;
+
     for(int i = 0; i < s->count; i++) build_card(i, &s->cards[i]);
     card_count = s->count;
 }
@@ -745,9 +755,8 @@ void ui_create(void)
     lv_obj_set_style_bg_opa(grid, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(grid, 0, 0);
     lv_obj_set_style_pad_all(grid, 0, 0);
-    lv_obj_set_style_pad_gap(grid, 24, 0);
-    lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW_WRAP);
-    lv_obj_set_flex_align(grid, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    /* Positionnement à la main (pas de flex) : chaque carte se place selon
+     * sa cellule (col/row/colspan/rowspan), voir build_card()/rebuild_grid(). */
     lv_obj_set_scroll_dir(grid, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(grid, LV_SCROLLBAR_MODE_ACTIVE);
 

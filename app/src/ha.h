@@ -44,7 +44,12 @@ typedef struct {
     bool missing;              /* HA répond 404 : entité inconnue */
     char icon[16];             /* clé sémantique (tiles.h), vide = icône par défaut du type */
     bool hidden;                /* masquée de la grille principale, éditable en Réglages */
+    int col, row;               /* position dans la grille fixe (GRID_COLS x GRID_ROWS, voir ui.c) */
+    int colspan, rowspan;       /* taille en cellules */
 } ha_card_t;
+
+#define GRID_COLS 4
+#define GRID_ROWS 4   /* 4x4 pour l'instant ; à revoir avec la barre de statut et un éventuel mode paysage */
 
 typedef struct {
     bool demo;                 /* pas de HA_HOST : valeurs simulées */
@@ -68,6 +73,9 @@ void ha_tile_move(int index, int dir);         /* dir<0 : vers le haut, dir>0 : 
 void ha_tile_toggle_hidden(int index);
 void ha_tile_cycle_icon(int index);
 void ha_tile_remove(int index);
+/* Place la carte n°index à cette position/taille, en décalant les cartes
+ * gênées vers la prochaine case libre (en cascade si besoin). */
+void ha_tile_set_rect(int index, int col, int row, int colspan, int rowspan);
 /* Ajoute une carte pour cette entité si elle n'y est pas déjà. Sans effet si
  * state.count a atteint HA_MAX_CARDS ou si l'entité y figure déjà. */
 void ha_tile_add(const char * entity);

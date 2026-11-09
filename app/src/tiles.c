@@ -105,6 +105,17 @@ static bool json_find_bool(const char * obj, const char * key, bool fallback)
     return !strncmp(p, "true", 4);
 }
 
+static int json_find_int(const char * obj, const char * key, int fallback)
+{
+    char pat[32];
+    snprintf(pat, sizeof pat, "\"%s\"", key);
+    const char * p = strstr(obj, pat);
+    if(!p) return fallback;
+    p = strchr(p + strlen(pat), ':');
+    if(!p) return fallback;
+    return (int)strtol(p + 1, NULL, 10);
+}
+
 int tiles_fetch(tile_pref_t out[], int max)
 {
     char body[32768];
@@ -136,6 +147,11 @@ int tiles_fetch(tile_pref_t out[], int max)
         if(json_find_str(obj, "entity", t->entity, sizeof t->entity)) {
             json_find_str(obj, "icon", t->icon, sizeof t->icon);
             t->hidden = json_find_bool(obj, "hidden", false);
+            /* -1/0 : absentes d'un fichier plus ancien, ou jamais placées -> auto-placement. */
+            t->col = json_find_int(obj, "col", -1);
+            t->row = json_find_int(obj, "row", -1);
+            t->colspan = json_find_int(obj, "colspan", 0);
+            t->rowspan = json_find_int(obj, "rowspan", 0);
             count++;
         }
         p = objend + 1;
@@ -149,9 +165,11 @@ void tiles_save(const tile_pref_t list[], int count)
     size_t n = (size_t)snprintf(body, sizeof body, "{\"version\":1,\"tiles\":[");
     for(int i = 0; i < count && n + 128 < sizeof body; i++) {
         n += (size_t)snprintf(body + n, sizeof body - n,
-                              "%s{\"entity\":\"%s\",\"icon\":\"%s\",\"hidden\":%s}",
+                              "%s{\"entity\":\"%s\",\"icon\":\"%s\",\"hidden\":%s,"
+                              "\"col\":%d,\"row\":%d,\"colspan\":%d,\"rowspan\":%d}",
                               i ? "," : "", list[i].entity, list[i].icon,
-                              list[i].hidden ? "true" : "false");
+                              list[i].hidden ? "true" : "false",
+                              list[i].col, list[i].row, list[i].colspan, list[i].rowspan);
     }
     snprintf(body + n, sizeof body - n, "]}");
 

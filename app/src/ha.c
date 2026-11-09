@@ -215,6 +215,8 @@ static void add_card(ha_state_t * s, const char * spec)
     }
     c->kind = kind_of(c->entity);
     snprintf(c->state, sizeof c->state, "--");
+    c->col = -1;   /* pas encore placée : auto_place_missing() lui trouvera une case */
+    c->row = -1;
     if(c->kind == HA_CARD_PAGE) c->known = true;   /* rien à demander à HA */
 }
 
@@ -319,14 +321,74 @@ static void send_press(const char * entity)
     http("POST", path, body, NULL, 0);
 }
 
-/* Superpose l'ordre, l'icône et le masquage lus depuis le service de config
- * hôte (s'il répond) sur les cartes déjà construites depuis HA_CARDS. Une
- * entité du fichier de préférences absente de HA_CARDS (ajoutée depuis la
- * page Réglages lors d'une session précédente) est reconstruite directement :
- * sans ça, un ajout fait dans l'appli ne survivait pas à un redémarrage,
- * seuls l'ordre/l'icône/le masquage des cartes déjà dans HA_CARDS tenaient.
- * Une entité de HA_CARDS pas encore dans les préférences (nouvelle carte
- * ajoutée côté hôte) est ajoutée à la suite, visible par défaut. */
+/* ---------- Grille fixe (GRID_COLS x lignes virtuelles) ----------
+ * Occupation en cellules, pour l'auto-placement des cartes sans position
+ * connue et pour décaler les cartes gênées par un déplacement/redimensionnement
+ * (ha_tile_set_rect). Une grille "virtuelle" assez haute : rien n'empêche une
+ * carte d'être placée au-delà des GRID_ROWS visibles, la grille défile. */
+#define GRID_VROWS 64
+
+static void occ_mark(bool occ[GRID_COLS][GRID_VROWS], int col, int row, int cs, int rs, bool val)
+{
+    for(int r = row; r < row + rs && r < GRID_VROWS; r++)
+        for(int c = col; c < col + cs && c < GRID_COLS; c++)
+            if(c >= 0 && r >= 0) occ[c][r] = val;
+}
+
+static bool occ_check(bool occ[GRID_COLS][GRID_VROWS], int col, int row, int cs, int rs)
+{
+    if(col < 0 || row < 0 || col + cs > GRID_COLS || row + rs > GRID_VROWS) return false;
+    for(int r = row; r < row + rs; r++)
+        for(int c = col; c < col + cs; c++)
+            if(occ[c][r]) return false;
+    return true;
+}
+
+static bool occ_find_free(bool occ[GRID_COLS][GRID_VROWS], int cs, int rs, int * out_col, int * out_row)
+{
+    for(int r = 0; r < GRID_VROWS; r++)
+        for(int c = 0; c + cs <= GRID_COLS; c++)
+            if(occ_check(occ, c, r, cs, rs)) { *out_col = c; *out_row = r; return true; }
+    return false;
+}
+
+/* Attribue une case aux cartes sans position connue (col<0), ou une taille
+ * par défaut (2x1) à celles dont la taille n'est pas encore connue. */
+static void auto_place_missing(ha_state_t * s)
+{
+    bool occ[GRID_COLS][GRID_VROWS] = {0};
+    for(int i = 0; i < s->count; i++) {
+        ha_card_t * c = &s->cards[i];
+        if(c->colspan <= 0) c->colspan = 2;
+        if(c->colspan > GRID_COLS) c->colspan = GRID_COLS;
+        if(c->rowspan <= 0) c->rowspan = 1;
+        if(c->col >= 0) occ_mark(occ, c->col, c->row, c->colspan, c->rowspan, true);
+    }
+    for(int i = 0; i < s->count; i++) {
+        ha_card_t * c = &s->cards[i];
+        if(c->col >= 0) continue;
+        int nc, nr;
+        if(occ_find_free(occ, c->colspan, c->rowspan, &nc, &nr)) {
+            c->col = nc;
+            c->row = nr;
+            occ_mark(occ, nc, nr, c->colspan, c->rowspan, true);
+        }
+        else {
+            c->col = 0;   /* grille virtuelle pleine : très improbable avec HA_MAX_CARDS cartes */
+            c->row = 0;
+        }
+    }
+}
+
+/* Superpose l'ordre, l'icône, le masquage et la position de grille lus
+ * depuis le service de config hôte (s'il répond) sur les cartes déjà
+ * construites depuis HA_CARDS. Une entité du fichier de préférences absente
+ * de HA_CARDS (ajoutée depuis la page Réglages lors d'une session
+ * précédente) est reconstruite directement : sans ça, un ajout fait dans
+ * l'appli ne survivait pas à un redémarrage, seuls l'ordre/l'icône/le
+ * masquage des cartes déjà dans HA_CARDS tenaient. Une entité de HA_CARDS
+ * pas encore dans les préférences (nouvelle carte ajoutée côté hôte) est
+ * ajoutée à la suite, placée automatiquement. */
 static void apply_tile_prefs(ha_state_t * s)
 {
     tile_pref_t prefs[TILES_MAX];
@@ -356,6 +418,10 @@ static void apply_tile_prefs(ha_state_t * s)
         }
         snprintf(dst->icon, sizeof dst->icon, "%s", prefs[i].icon);
         dst->hidden = prefs[i].hidden;
+        dst->col = prefs[i].col;
+        dst->row = prefs[i].row;
+        dst->colspan = prefs[i].colspan;
+        dst->rowspan = prefs[i].rowspan;
         count++;
     }
     for(int j = 0; j < s->count && count < HA_MAX_CARDS; j++)
@@ -363,6 +429,7 @@ static void apply_tile_prefs(ha_state_t * s)
 
     memcpy(s->cards, reordered, sizeof(ha_card_t) * (size_t)count);
     s->count = count;
+    auto_place_missing(s);
 }
 
 /* Réduit l'état courant aux champs que le service hôte doit retenir, et l'y envoie. */
@@ -380,6 +447,10 @@ static void save_tile_prefs(void)
         snprintf(prefs[n].entity, sizeof prefs[n].entity, "%s", s.cards[i].entity);
         snprintf(prefs[n].icon, sizeof prefs[n].icon, "%s", s.cards[i].icon);
         prefs[n].hidden = s.cards[i].hidden;
+        prefs[n].col = s.cards[i].col;
+        prefs[n].row = s.cards[i].row;
+        prefs[n].colspan = s.cards[i].colspan;
+        prefs[n].rowspan = s.cards[i].rowspan;
         n++;
     }
     tiles_save(prefs, n);
@@ -638,9 +709,64 @@ void ha_tile_add(const char * entity)
         snprintf(c->name, sizeof c->name, "%s", entity);   /* affiné par le prochain relevé */
         c->kind = kind_of(entity);
         snprintf(c->state, sizeof c->state, "--");
+        c->col = -1;
+        c->row = -1;
+        auto_place_missing(&state);
         state.version++;
         tiles_dirty = true;
         pthread_cond_signal(&wake);
     }
+    pthread_mutex_unlock(&lock);
+}
+
+void ha_tile_set_rect(int index, int col, int row, int colspan, int rowspan)
+{
+    pthread_mutex_lock(&lock);
+    if(index < 0 || index >= state.count) {
+        pthread_mutex_unlock(&lock);
+        return;
+    }
+    if(colspan < 1) colspan = 1;
+    if(colspan > GRID_COLS) colspan = GRID_COLS;
+    if(rowspan < 1) rowspan = 1;
+    if(col < 0) col = 0;
+    if(col + colspan > GRID_COLS) col = GRID_COLS - colspan;
+    if(row < 0) row = 0;
+
+    state.cards[index].col = col;
+    state.cards[index].row = row;
+    state.cards[index].colspan = colspan;
+    state.cards[index].rowspan = rowspan;
+
+    /* Les cartes dont l'ancienne place chevauche la nouvelle position de la
+     * carte déplacée se décalent vers la prochaine case libre. Comme la
+     * grille est toujours sans chevauchement avant cette opération, seule la
+     * carte déplacée peut en gêner d'autres : une seule passe suffit, sans
+     * récursion. */
+    bool occ[GRID_COLS][GRID_VROWS] = {0};
+    for(int i = 0; i < state.count; i++)
+        if(i != index && state.cards[i].col >= 0)
+            occ_mark(occ, state.cards[i].col, state.cards[i].row,
+                     state.cards[i].colspan, state.cards[i].rowspan, true);
+    occ_mark(occ, col, row, colspan, rowspan, true);
+
+    for(int i = 0; i < state.count; i++) {
+        if(i == index || state.cards[i].col < 0) continue;
+        ha_card_t * c = &state.cards[i];
+        bool overlap = col < c->col + c->colspan && c->col < col + colspan &&
+                       row < c->row + c->rowspan && c->row < row + rowspan;
+        if(!overlap) continue;
+        occ_mark(occ, c->col, c->row, c->colspan, c->rowspan, false);
+        int nc, nr;
+        if(occ_find_free(occ, c->colspan, c->rowspan, &nc, &nr)) {
+            c->col = nc;
+            c->row = nr;
+        }
+        occ_mark(occ, c->col, c->row, c->colspan, c->rowspan, true);
+    }
+
+    state.version++;
+    tiles_dirty = true;
+    pthread_cond_signal(&wake);
     pthread_mutex_unlock(&lock);
 }
