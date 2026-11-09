@@ -22,12 +22,27 @@ LVGL est épinglé en **v9.2.2** et téléchargé à la compilation. La configur
 | `sensor`, `binary_sensor`, autres | valeur et unité | rien |
 | `scene`, `script` | lancement | `scene.turn_on`, `script.turn_on` |
 | `button`, `input_button` | lancement | `button.press`, `input_button.press` |
+| `panel` | page de l'appli, sans Home Assistant | ouvre la page (`panel.test` : page de test) |
 
 Une entité qui n'existe pas dans Home Assistant affiche « Entité inconnue » en rouge.
 
 Sans `HA_HOST`, l'appli tourne en **mode démo** avec des valeurs simulées. Pratique pour travailler l'interface sans Home Assistant.
 
 Le client passe par l'API REST en HTTP simple sur le réseau local, avec un jeton longue durée. Il relève les états toutes les 3 secondes dans un thread à part, donc l'interface ne se fige jamais sur le réseau. Une requête perdue est retentée une fois, et « injoignable » ne s'affiche qu'après 3 relevés ratés d'affilée.
+
+## Page de test et transitions
+
+`panel.test=Test animation` dans `HA_CARDS` ajoute une carte qui ouvre une page de test. On en revient par le bouton Accueil de l'iPad, le bouton Retour, ou un glissement vers la droite.
+
+Le passage d'une page à l'autre glisse en 340 ms, avec une parallaxe et une courbe proche de celle d'iOS, et vise 60 images/s (`LV_DEF_REFR_PERIOD` à 16 ms). Pour tenir ce rythme sur l'A5 sans GPU, chaque page est photographiée une fois au départ (`lv_snapshot`, en XRGB8888), puis seules les deux photos se déplacent. LVGL recopie une image XRGB8888 opaque par `memcpy` ligne à ligne : pendant le mouvement, aucune carte ni aucun texte n'est redessiné.
+
+La page de test affiche le compteur de LVGL (images/s et charge du processeur) et le résultat de la dernière transition. Chaque transition est aussi notée dans `panel.log` :
+
+```
+ui: transition aller, 21 images en 351 ms, soit 59 i/s
+```
+
+Mesuré hors écran sur un PC : 57 à 59 i/s. Le chiffre sur l'iPad reste à relever.
 
 ## Boutons de l'iPad
 
@@ -37,7 +52,7 @@ L'appli reprend les boutons à `p105-keys`, le programme de Cascadia qui les gè
 |---|---|
 | Volume + / − | luminosité en 32 pas, maintenir pour continuer |
 | Marche | éteint ou rallume l'écran ; éteint, le tactile est ignoré |
-| Accueil | rallume l'écran, sinon remonte la grille |
+| Accueil | rallume l'écran ; sur une sous-page, revient à l'accueil ; sinon remonte la grille |
 | Interrupteur latéral | mode nuit en position « muet » (orange visible) : luminosité au minimum, écran voilé ; l'autre position rend la luminosité de jour |
 
 `scripts/app-deploy.sh` arrête `p105-keys` avant de lancer l'appli, et `--stop` le relance en rallumant l'écran. Si `p105-keys` tourne encore, l'appli ne peut pas prendre les boutons : elle l'écrit dans `panel.log` et continue sans eux. Dans le simulateur, les boutons n'existent pas.

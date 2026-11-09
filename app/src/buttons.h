@@ -2,7 +2,7 @@
  *
  *   volume + / -          luminosité, en 32 pas ; maintenu, continue
  *   marche                écran éteint / rallumé ; éteint, le tactile est ignoré
- *   accueil               rallume l'écran, sinon ui_home()
+ *   accueil               rallume l'écran, sinon ui_home() (retour ou haut de grille)
  *   interrupteur latéral  mode nuit en position « muet » (orange visible)
  *
  * L'appli prend les boutons en exclusivité (EVIOCGRAB) : p105-keys, le

@@ -13,6 +13,7 @@
  *   bascule  : light, switch, fan, input_boolean, automation, cover
  *   valeur   : sensor, binary_sensor, et tout domaine inconnu
  *   action   : scene, script, button, input_button
+ *   page     : panel (pages de l'appli, pas d'entité HA) : panel.test ouvre la page de test
  *
  * Les requêtes tournent dans un thread à part : l'interface ne se bloque
  * jamais sur le réseau. L'interface lit un instantané avec ha_snapshot(). */
@@ -28,6 +29,7 @@ typedef enum {
     HA_CARD_TOGGLE,
     HA_CARD_VALUE,
     HA_CARD_ACTION,
+    HA_CARD_PAGE,      /* domaine « panel » : page locale de l'appli, sans Home Assistant */
 } ha_card_kind_t;
 
 typedef struct {

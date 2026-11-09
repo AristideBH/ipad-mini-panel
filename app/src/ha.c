@@ -160,6 +160,7 @@ static ha_card_kind_t kind_of(const char * entity)
 {
     char d[32];
     domain_of(entity, d, sizeof d);
+    if(!strcmp(d, "panel")) return HA_CARD_PAGE;
     static const char * toggles[] = {"light", "switch", "fan", "input_boolean", "automation", "cover", NULL};
     static const char * actions[] = {"scene", "script", "button", "input_button", NULL};
     for(int i = 0; toggles[i]; i++) if(!strcmp(d, toggles[i])) return HA_CARD_TOGGLE;
@@ -207,6 +208,7 @@ static void add_card(ha_state_t * s, const char * spec)
     }
     c->kind = kind_of(c->entity);
     snprintf(c->state, sizeof c->state, "--");
+    if(c->kind == HA_CARD_PAGE) c->known = true;   /* rien à demander à HA */
 }
 
 static void parse_cards(ha_state_t * s, const char * list)
@@ -245,14 +247,17 @@ static void poll_once(void)
     s = state;
     pthread_mutex_unlock(&lock);
 
-    bool reached = false, auth = false;
+    bool reached = false, auth = false, asked = false;
     for(int i = 0; i < s.count; i++) {
+        if(s.cards[i].kind == HA_CARD_PAGE) continue;
+        asked = true;
         int code = fetch_card(&s.cards[i]);
         if(code >= 0) reached = true;
         if(code == 401) auth = true;
         s.cards[i].missing = code == 404;
         if(code == 401) break;   /* inutile d'insister avec un jeton refusé */
     }
+    if(!asked) reached = true;   /* que des pages locales : rien à joindre */
 
     pthread_mutex_lock(&lock);
     if(reached) {
@@ -366,7 +371,8 @@ void ha_start(void)
     }
     if(state.count == 0 && state.demo)
         parse_cards(&state, "light.salon=Plafonnier,switch.prise=Imprimante 3D,"
-                            "sensor.salon=Salon,sensor.chambre=Chambre,scene.soiree=Soirée,cover.volet=Volet");
+                            "sensor.salon=Salon,sensor.chambre=Chambre,scene.soiree=Soirée,cover.volet=Volet,"
+                            "panel.test=Test animation");
 
     fprintf(stderr, "ha: %d carte(s)%s\n", state.count, state.demo ? ", mode démo" : "");
     pthread_create(&worker, NULL, run, NULL);
@@ -391,7 +397,8 @@ void ha_snapshot(ha_state_t * out)
 void ha_press(int index)
 {
     pthread_mutex_lock(&lock);
-    if(index >= 0 && index < state.count && state.cards[index].kind != HA_CARD_VALUE) {
+    if(index >= 0 && index < state.count &&
+       (state.cards[index].kind == HA_CARD_TOGGLE || state.cards[index].kind == HA_CARD_ACTION)) {
         press_mask |= 1u << index;
         /* Retour visuel immédiat, corrigé au prochain relevé si HA dit autre chose. */
         if(state.cards[index].kind == HA_CARD_TOGGLE) {
