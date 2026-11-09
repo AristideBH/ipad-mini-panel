@@ -542,6 +542,10 @@ void ui_toggle_edit(void)
     edit_mode = !edit_mode;
     if(edit_btn_lbl)
         lv_label_set_text(edit_btn_lbl, edit_mode ? LV_SYMBOL_OK "  Terminé" : LV_SYMBOL_EDIT "  Modifier");
+    /* Sinon un glissement vertical sur une carte ferait défiler la grille
+     * plutôt que de la déplacer. */
+    if(edit_mode) lv_obj_remove_flag(grid, LV_OBJ_FLAG_SCROLLABLE);
+    else lv_obj_add_flag(grid, LV_OBJ_FLAG_SCROLLABLE);
 
     /* refresh_ha() ne reconstruit rien si les données HA n'ont pas changé :
      * ici c'est le mode édition qui change, pas les données, donc on force
@@ -556,6 +560,70 @@ static void on_edit_toggle(lv_event_t * e)
 {
     (void)e;
     ui_toggle_edit();
+}
+
+/* ---------- Glissement d'une carte en mode édition ---------- */
+
+static struct {
+    bool active;
+    int index;
+    lv_obj_t * obj;
+    lv_point_t start_point;      /* point absolu au moment de l'appui */
+    int32_t start_x, start_y;    /* position locale de la carte au même moment */
+} drag;
+
+static void on_card_pressed(lv_event_t * e)
+{
+    drag.active = true;
+    drag.index = (int)(intptr_t)lv_event_get_user_data(e);
+    drag.obj = lv_event_get_target(e);
+    lv_indev_get_point(lv_indev_active(), &drag.start_point);
+    drag.start_x = lv_obj_get_x(drag.obj);
+    drag.start_y = lv_obj_get_y(drag.obj);
+    lv_obj_move_foreground(drag.obj);
+}
+
+static void on_card_dragging(lv_event_t * e)
+{
+    (void)e;
+    if(!drag.active) return;
+    /* Écart entre deux points absolus plutôt que le delta relatif de
+     * l'indev (lv_indev_get_vect) : ce dernier peut être mal mis à l'échelle
+     * sous SDL avec un facteur HiDPI, alors que la position absolue, elle,
+     * est juste (les clics tombent au bon endroit depuis le début). Le
+     * tactile de l'iPad n'a pas cette couche, mais ça reste correct là aussi. */
+    lv_point_t p;
+    lv_indev_get_point(lv_indev_active(), &p);
+    lv_obj_set_pos(drag.obj, drag.start_x + (p.x - drag.start_point.x),
+                             drag.start_y + (p.y - drag.start_point.y));
+}
+
+static void on_card_released(lv_event_t * e)
+{
+    (void)e;
+    if(!drag.active) return;
+    drag.active = false;
+
+    int col = (lv_obj_get_x(drag.obj) + cell_w / 2) / (cell_w + GRID_GAP);
+    int row = (lv_obj_get_y(drag.obj) + cell_h / 2) / (cell_h + GRID_GAP);
+    if(col < 0) col = 0;
+    if(row < 0) row = 0;
+
+    ha_state_t s;
+    ha_snapshot(&s);
+    int colspan = 2, rowspan = 1;
+    if(drag.index < s.count) {
+        colspan = s.cards[drag.index].colspan;
+        rowspan = s.cards[drag.index].rowspan;
+    }
+    ha_tile_set_rect(drag.index, col, row, colspan, rowspan);
+
+    /* ha_tile_set_rect() a bougé cette carte (et peut-être décalé des
+     * voisines) : on force la reconstruction pour que tout se range
+     * proprement sur la grille, comme ui_toggle_edit(). */
+    ha_snapshot(&s);
+    rebuild_grid(&s);
+    for(int i = 0; i < s.count; i++) update_card(i, &s.cards[i]);
 }
 
 static void build_card(int i, const ha_card_t * c)
@@ -577,7 +645,15 @@ static void build_card(int i, const ha_card_t * c)
     lv_obj_set_flex_align(u->card, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
     lv_obj_remove_flag(u->card, LV_OBJ_FLAG_SCROLLABLE);
 
-    if(c->kind != HA_CARD_VALUE) {
+    if(edit_mode) {
+        /* Toutes les cartes se déplacent en édition, même les capteurs
+         * (normalement non cliquables : rien à y faire au toucher d'habitude). */
+        lv_obj_add_flag(u->card, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(u->card, on_card_pressed, LV_EVENT_PRESSED, (void *)(intptr_t)i);
+        lv_obj_add_event_cb(u->card, on_card_dragging, LV_EVENT_PRESSING, (void *)(intptr_t)i);
+        lv_obj_add_event_cb(u->card, on_card_released, LV_EVENT_RELEASED, (void *)(intptr_t)i);
+    }
+    else if(c->kind != HA_CARD_VALUE) {
         lv_obj_add_flag(u->card, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_set_style_bg_color(u->card, COL_PRESSED, LV_STATE_PRESSED);
         lv_obj_add_event_cb(u->card, on_card_clicked, LV_EVENT_CLICKED, (void *)(intptr_t)i);
@@ -664,9 +740,10 @@ static void refresh_clock(void)
     lv_label_set_text_fmt(lbl_date, "%s %d %s", jours[t.tm_wday], t.tm_mday, mois[t.tm_mon]);
 }
 
-/* Ordre, masquage et icône : ce qui change la liste des cartes à construire,
- * par opposition à leur état (valeur, allumé/éteint…) qui se met juste à jour
- * en place. Évite de reconstruire toute la grille à chaque relevé HA. */
+/* Masquage, icône et position/taille de grille : ce qui change la liste des
+ * cartes à construire ou leur place, par opposition à leur état (valeur,
+ * allumé/éteint…) qui se met juste à jour en place. Évite de reconstruire
+ * toute la grille à chaque relevé HA. */
 static unsigned struct_hash(const ha_state_t * s)
 {
     unsigned h = 2166136261u;
@@ -675,6 +752,10 @@ static unsigned struct_hash(const ha_state_t * s)
         for(const char * p = c->entity; *p; p++) h = (h ^ (unsigned char)*p) * 16777619u;
         for(const char * p = c->icon; *p; p++) h = (h ^ (unsigned char)*p) * 16777619u;
         h = (h ^ (c->hidden ? 1u : 0u)) * 16777619u;
+        h = (h ^ (unsigned)(c->col + 1000)) * 16777619u;
+        h = (h ^ (unsigned)(c->row + 1000)) * 16777619u;
+        h = (h ^ (unsigned)c->colspan) * 16777619u;
+        h = (h ^ (unsigned)c->rowspan) * 16777619u;
     }
     return h;
 }

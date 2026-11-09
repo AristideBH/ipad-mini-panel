@@ -739,15 +739,16 @@ void ha_tile_set_rect(int index, int col, int row, int colspan, int rowspan)
     state.cards[index].rowspan = rowspan;
 
     /* Les cartes dont l'ancienne place chevauche la nouvelle position de la
-     * carte déplacée se décalent vers la prochaine case libre. Comme la
-     * grille est toujours sans chevauchement avant cette opération, seule la
-     * carte déplacée peut en gêner d'autres : une seule passe suffit, sans
-     * récursion. */
+     * carte déplacée se décalent vers la prochaine case libre. Deux passes :
+     * d'abord fixer l'occupation de tout ce qui NE bouge PAS (la carte
+     * déplacée, et les cartes qui ne la gênent pas, inchangées), puis ne
+     * reloger que les gênées, chacune dans une case déjà garantie libre de
+     * tout le reste. Jamais besoin de « libérer » une case après coup : une
+     * carte gênée dont l'ancienne place n'était que partiellement recouverte
+     * se retrouvait sinon parfois réaffectée à cette même ancienne place
+     * (toujours en partie sous la carte déplacée) faute de l'avoir bien
+     * libérée bit à bit. */
     bool occ[GRID_COLS][GRID_VROWS] = {0};
-    for(int i = 0; i < state.count; i++)
-        if(i != index && state.cards[i].col >= 0)
-            occ_mark(occ, state.cards[i].col, state.cards[i].row,
-                     state.cards[i].colspan, state.cards[i].rowspan, true);
     occ_mark(occ, col, row, colspan, rowspan, true);
 
     for(int i = 0; i < state.count; i++) {
@@ -755,14 +756,20 @@ void ha_tile_set_rect(int index, int col, int row, int colspan, int rowspan)
         ha_card_t * c = &state.cards[i];
         bool overlap = col < c->col + c->colspan && c->col < col + colspan &&
                        row < c->row + c->rowspan && c->row < row + rowspan;
+        if(!overlap) occ_mark(occ, c->col, c->row, c->colspan, c->rowspan, true);
+    }
+    for(int i = 0; i < state.count; i++) {
+        if(i == index || state.cards[i].col < 0) continue;
+        ha_card_t * c = &state.cards[i];
+        bool overlap = col < c->col + c->colspan && c->col < col + colspan &&
+                       row < c->row + c->rowspan && c->row < row + rowspan;
         if(!overlap) continue;
-        occ_mark(occ, c->col, c->row, c->colspan, c->rowspan, false);
         int nc, nr;
         if(occ_find_free(occ, c->colspan, c->rowspan, &nc, &nr)) {
             c->col = nc;
             c->row = nr;
+            occ_mark(occ, nc, nr, c->colspan, c->rowspan, true);
         }
-        occ_mark(occ, c->col, c->row, c->colspan, c->rowspan, true);
     }
 
     state.version++;
