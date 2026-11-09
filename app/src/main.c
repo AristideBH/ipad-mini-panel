@@ -2,6 +2,7 @@
  * Même code pour le simulateur SDL et pour l'iPad (framebuffer + evdev). */
 #define _POSIX_C_SOURCE 200809L
 #include "lvgl.h"
+#include "buttons.h"
 #include "ha.h"
 #include "ui.h"
 
@@ -54,7 +55,7 @@ static void console_graphics(int on)
     }
 }
 
-static void display_init(void)
+static lv_indev_t * display_init(void)
 {
     const char * fb = getenv("PANEL_FB");
     const char * touch = getenv("PANEL_TOUCH");
@@ -65,12 +66,13 @@ static void display_init(void)
 
     lv_indev_t * indev = lv_evdev_create(LV_INDEV_TYPE_POINTER, touch ? touch : "/dev/input/event0");
     if(!indev) fprintf(stderr, "panel: pas de tactile sur %s\n", touch ? touch : "/dev/input/event0");
+    return indev;
 }
 #else
-static void display_init(void)
+static lv_indev_t * display_init(void)
 {
     lv_sdl_window_create(PANEL_W, PANEL_H);
-    lv_sdl_mouse_create();
+    return lv_sdl_mouse_create();
 }
 #endif
 
@@ -94,10 +96,11 @@ int main(void)
 
     lv_init();
     lv_tick_set_cb(tick_ms);
-    display_init();
+    lv_indev_t * touch = display_init();
 
     ha_start();
     ui_create();
+    buttons_start(touch);
 
     while(running) {
         uint32_t idle = lv_timer_handler();
@@ -106,6 +109,7 @@ int main(void)
         nanosleep(&pause, NULL);
     }
 
+    buttons_stop();
     ha_stop();
 #if PANEL_FBDEV
     console_graphics(0);

@@ -2,7 +2,7 @@
 # Envoie l'appli sur l'iPad (sous Linux, par le câble) et la lance.
 #   scripts/app-deploy.sh         envoie et lance au premier plan (Ctrl+C pour quitter)
 #   scripts/app-deploy.sh --bg    envoie et lance en arrière-plan
-#   scripts/app-deploy.sh --stop  arrête l'appli et rend la main à la console
+#   scripts/app-deploy.sh --stop  arrête l'appli, rend la console et les boutons à Cascadia
 set -eu
 cd "$(dirname "$0")/../app"
 
@@ -13,8 +13,14 @@ SSH="ssh -o StrictHostKeyChecking=accept-new $IPAD"
 # même framebuffer se recouvrent à l'écran.
 STOP='killall panel 2>/dev/null; for i in 1 2 3 4 5; do pidof panel >/dev/null || exit 0; sleep 0.2; done; killall -9 panel 2>/dev/null; sleep 0.2; ! pidof panel >/dev/null'
 
+# p105-keys (Cascadia) gère d'habitude les boutons. L'appli les reprend :
+# il est arrêté au lancement, et relancé par --stop.
+P105_KEYS='pidof p105-keys >/dev/null || setsid /sbin/p105-keys >/tmp/p105-keys.log 2>&1 </dev/null &'
+
 if [ "${1:-}" = "--stop" ]; then
     $SSH "$STOP" || { echo "panel tourne encore sur l'iPad" >&2; exit 1; }
+    # Écran rallumé au cas où l'appli se serait arrêtée écran éteint.
+    $SSH "echo 0 > /sys/class/backlight/apple-pmu-wled/bl_power; $P105_KEYS"
     exit 0
 fi
 
@@ -28,7 +34,7 @@ if [ -f panel.env ]; then
 fi
 
 # Le clavier à l'écran dessine aussi dans le framebuffer : on l'arrête.
-RUN='pkill fbkeyboard 2>/dev/null || true; [ -f /root/panel.env ] && { set -a; . /root/panel.env; set +a; }; exec /root/panel'
+RUN='pkill fbkeyboard 2>/dev/null; killall p105-keys 2>/dev/null; sleep 0.2; [ -f /root/panel.env ] && { set -a; . /root/panel.env; set +a; }; exec /root/panel'
 
 if [ "${1:-}" = "--bg" ]; then
     $SSH "nohup sh -c '$RUN' >/root/panel.log 2>&1 &"

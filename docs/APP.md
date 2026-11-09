@@ -29,6 +29,19 @@ Sans `HA_HOST`, l'appli tourne en **mode démo** avec des valeurs simulées. Pra
 
 Le client passe par l'API REST en HTTP simple sur le réseau local, avec un jeton longue durée. Il relève les états toutes les 3 secondes dans un thread à part, donc l'interface ne se fige jamais sur le réseau. Une requête perdue est retentée une fois, et « injoignable » ne s'affiche qu'après 3 relevés ratés d'affilée.
 
+## Boutons de l'iPad
+
+L'appli reprend les boutons à `p105-keys`, le programme de Cascadia qui les gère d'habitude. Tous arrivent sur le périphérique `gpio-keys` (`/dev/input/event1`).
+
+| Bouton | Action |
+|---|---|
+| Volume + / − | luminosité en 32 pas, maintenir pour continuer |
+| Marche | éteint ou rallume l'écran ; éteint, le tactile est ignoré |
+| Accueil | rallume l'écran, sinon remonte la grille |
+| Interrupteur latéral | mode nuit en position « muet » (orange visible) : luminosité au minimum, écran voilé ; l'autre position rend la luminosité de jour |
+
+`scripts/app-deploy.sh` arrête `p105-keys` avant de lancer l'appli, et `--stop` le relance en rallumant l'écran. Si `p105-keys` tourne encore, l'appli ne peut pas prendre les boutons : elle l'écrit dans `panel.log` et continue sans eux. Dans le simulateur, les boutons n'existent pas.
+
 ## Réglages
 
 ```sh
@@ -83,4 +96,5 @@ Le script arrête le clavier à l'écran (`fbkeyboard`), qui dessine dans le mê
 - Compilation de la cible `fbdev` en x86_64, statique.
 - Rendu hors écran, en mode démo et contre un faux serveur Home Assistant : noms accentués, nom imposé, volet, entité inconnue.
 - Appuis : le bon service est appelé selon le domaine, un appui sur un capteur ne fait rien.
+- Boutons : logique testée avec de faux événements et un faux rétroéclairage (luminosité, écran éteint, accueil, mode nuit, arrêt). Pas encore sur l'iPad.
 - Sur l'iPad, par l'utilisateur : compilation ARM, affichage, tactile, bascule d'une lumière.

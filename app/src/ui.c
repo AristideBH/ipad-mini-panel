@@ -175,6 +175,20 @@ static void refresh_ha(void)
     }
 }
 
+void ui_home(void)
+{
+    if(grid) lv_obj_scroll_to_y(grid, 0, LV_ANIM_ON);
+}
+
+void ui_set_night(bool on)
+{
+    /* Un voile noir sur le calque du dessus atténue tout, sans toucher aux cartes.
+     * Le calque n'est pas cliquable : le tactile passe au travers. */
+    lv_obj_t * top = lv_layer_top();
+    lv_obj_set_style_bg_color(top, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(top, on ? LV_OPA_50 : LV_OPA_TRANSP, 0);
+}
+
 static void on_tick(lv_timer_t * t)
 {
     (void)t;
