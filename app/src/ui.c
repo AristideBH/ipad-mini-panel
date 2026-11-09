@@ -264,11 +264,16 @@ static void build_test_page(lv_obj_t * scr)
     }
 }
 
+static void refresh_ha(void);   /* plus bas : rebuild_grid()/update_card() en dépendent */
+
 static void on_card_clicked(lv_event_t * e)
 {
     int i = (int)(intptr_t)lv_event_get_user_data(e);
     if(cards[i].kind == HA_CARD_PAGE) open_test();
-    else ha_press(i);
+    else {
+        ha_press(i);
+        refresh_ha();   /* bascule à l'écran tout de suite, sans attendre le minuteur à 500 ms */
+    }
 }
 
 static void build_card(int i, const ha_card_t * c)

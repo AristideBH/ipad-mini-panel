@@ -335,12 +335,17 @@ static void * run(void * arg)
             for(int i = 0; i < count; i++)
                 if(mask & (1u << i)) send_press(pressed[i]);
 
+        /* press_mask reste levé pendant ce relevé : poll_once() s'en sert pour
+         * garder le retour optimiste si HA n'a pas encore rattrapé son état
+         * (courant avec un appareil Zigbee/Z-Wave réel). Sans ça, ce relevé-ci,
+         * déclenché par l'appui lui-même, écrasait l'optimisme avant même le
+         * premier relevé périodique. */
+        if(demo) demo_once();
+        else poll_once();
+
         pthread_mutex_lock(&lock);
         press_mask &= ~mask;
         pthread_mutex_unlock(&lock);
-
-        if(demo) demo_once();
-        else poll_once();
 
         /* Attend POLL_MS, ou moins si l'interface demande une action. */
         struct timespec until;
