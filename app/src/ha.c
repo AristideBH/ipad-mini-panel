@@ -321,8 +321,12 @@ static void send_press(const char * entity)
 
 /* Superpose l'ordre, l'icône et le masquage lus depuis le service de config
  * hôte (s'il répond) sur les cartes déjà construites depuis HA_CARDS. Une
- * entité présente dans HA_CARDS mais pas encore dans les préférences (nouvelle
- * carte ajoutée côté hôte) est ajoutée à la suite, visible par défaut. */
+ * entité du fichier de préférences absente de HA_CARDS (ajoutée depuis la
+ * page Réglages lors d'une session précédente) est reconstruite directement :
+ * sans ça, un ajout fait dans l'appli ne survivait pas à un redémarrage,
+ * seuls l'ordre/l'icône/le masquage des cartes déjà dans HA_CARDS tenaient.
+ * Une entité de HA_CARDS pas encore dans les préférences (nouvelle carte
+ * ajoutée côté hôte) est ajoutée à la suite, visible par défaut. */
 static void apply_tile_prefs(ha_state_t * s)
 {
     tile_pref_t prefs[TILES_MAX];
@@ -334,15 +338,25 @@ static void apply_tile_prefs(ha_state_t * s)
     int count = 0;
 
     for(int i = 0; i < n && count < HA_MAX_CARDS; i++) {
+        ha_card_t * dst = &reordered[count];
+        bool found = false;
         for(int j = 0; j < s->count; j++) {
             if(used[j] || strcmp(s->cards[j].entity, prefs[i].entity)) continue;
-            reordered[count] = s->cards[j];
-            snprintf(reordered[count].icon, sizeof reordered[count].icon, "%s", prefs[i].icon);
-            reordered[count].hidden = prefs[i].hidden;
+            *dst = s->cards[j];
             used[j] = true;
-            count++;
+            found = true;
             break;
         }
+        if(!found) {
+            memset(dst, 0, sizeof *dst);
+            snprintf(dst->entity, sizeof dst->entity, "%s", prefs[i].entity);
+            snprintf(dst->name, sizeof dst->name, "%s", prefs[i].entity);
+            dst->kind = kind_of(prefs[i].entity);
+            snprintf(dst->state, sizeof dst->state, "--");
+        }
+        snprintf(dst->icon, sizeof dst->icon, "%s", prefs[i].icon);
+        dst->hidden = prefs[i].hidden;
+        count++;
     }
     for(int j = 0; j < s->count && count < HA_MAX_CARDS; j++)
         if(!used[j]) reordered[count++] = s->cards[j];
