@@ -626,6 +626,77 @@ static void on_card_released(lv_event_t * e)
     for(int i = 0; i < s.count; i++) update_card(i, &s.cards[i]);
 }
 
+/* ---------- Redimensionnement par poignée (coin bas-droit) ---------- */
+
+static struct {
+    bool active;
+    int index;
+    lv_obj_t * obj;          /* la carte qu'on redimensionne */
+    lv_point_t start_point;
+    int32_t start_colspan, start_rowspan;
+} resize;
+
+static void on_handle_pressed(lv_event_t * e)
+{
+    int i = (int)(intptr_t)lv_event_get_user_data(e);
+    resize.active = true;
+    resize.index = i;
+    resize.obj = cards[i].card;
+    lv_indev_get_point(lv_indev_active(), &resize.start_point);
+
+    ha_state_t s;
+    ha_snapshot(&s);
+    resize.start_colspan = (i < s.count) ? s.cards[i].colspan : 2;
+    resize.start_rowspan = (i < s.count) ? s.cards[i].rowspan : 1;
+    lv_obj_move_foreground(resize.obj);
+}
+
+static void on_handle_dragging(lv_event_t * e)
+{
+    (void)e;
+    if(!resize.active) return;
+    lv_point_t p;
+    lv_indev_get_point(lv_indev_active(), &p);
+    int32_t dx = p.x - resize.start_point.x;
+    int32_t dy = p.y - resize.start_point.y;
+
+    int32_t w = resize.start_colspan * cell_w + (resize.start_colspan - 1) * GRID_GAP + dx;
+    int32_t h = resize.start_rowspan * cell_h + (resize.start_rowspan - 1) * GRID_GAP + dy;
+    if(w < cell_w / 2) w = cell_w / 2;   /* jamais plus petit qu'une demi-cellule, pour rester saisissable */
+    if(h < cell_h / 2) h = cell_h / 2;
+    lv_obj_set_size(resize.obj, w, h);
+}
+
+static void on_handle_released(lv_event_t * e)
+{
+    (void)e;
+    if(!resize.active) return;
+    resize.active = false;
+
+    int32_t w = lv_obj_get_width(resize.obj);
+    int32_t h = lv_obj_get_height(resize.obj);
+    /* Arrondi à la cellule la plus proche plutôt qu'à la cellule du dessous :
+     * +(cell+gap)/2 avant la division entière. */
+    int colspan = (w + GRID_GAP + (cell_w + GRID_GAP) / 2) / (cell_w + GRID_GAP);
+    int rowspan = (h + GRID_GAP + (cell_h + GRID_GAP) / 2) / (cell_h + GRID_GAP);
+    if(colspan < 1) colspan = 1;
+    if(colspan > GRID_COLS) colspan = GRID_COLS;
+    if(rowspan < 1) rowspan = 1;
+
+    ha_state_t s;
+    ha_snapshot(&s);
+    int col = 0, row = 0;
+    if(resize.index < s.count) {
+        col = s.cards[resize.index].col;
+        row = s.cards[resize.index].row;
+    }
+    ha_tile_set_rect(resize.index, col, row, colspan, rowspan);
+
+    ha_snapshot(&s);
+    rebuild_grid(&s);
+    for(int i = 0; i < s.count; i++) update_card(i, &s.cards[i]);
+}
+
 static void build_card(int i, const ha_card_t * c)
 {
     if(c->hidden) return;   /* masquée depuis la page Réglages : absente de la grille principale */
@@ -678,6 +749,21 @@ static void build_card(int i, const ha_card_t * c)
     lv_obj_set_width(u->name, lv_pct(100));
 
     u->detail = make_label(u->card, &panel_font_16, COL_MUTED);
+
+    if(edit_mode) {
+        lv_obj_t * handle = lv_obj_create(u->card);
+        lv_obj_set_size(handle, 36, 36);
+        lv_obj_set_style_radius(handle, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_color(handle, COL_ACTION, 0);
+        lv_obj_set_style_border_width(handle, 0, 0);
+        lv_obj_set_style_pad_all(handle, 0, 0);
+        lv_obj_remove_flag(handle, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_align(handle, LV_ALIGN_BOTTOM_RIGHT, 2, 2);
+        lv_obj_add_flag(handle, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(handle, on_handle_pressed, LV_EVENT_PRESSED, (void *)(intptr_t)i);
+        lv_obj_add_event_cb(handle, on_handle_dragging, LV_EVENT_PRESSING, (void *)(intptr_t)i);
+        lv_obj_add_event_cb(handle, on_handle_released, LV_EVENT_RELEASED, (void *)(intptr_t)i);
+    }
 }
 
 static void rebuild_grid(const ha_state_t * s)
