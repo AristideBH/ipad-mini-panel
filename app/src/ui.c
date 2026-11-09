@@ -63,6 +63,8 @@ static lv_obj_t * lbl_date;
 static lv_obj_t * lbl_status;
 static lv_obj_t * grid;
 static int32_t cell_w, cell_h;   /* taille d'une cellule, calculée une fois la grille mise en page */
+static bool edit_mode;           /* grille principale : déplacer/redimensionner au lieu de basculer */
+static lv_obj_t * edit_btn_lbl;
 static card_ui_t cards[HA_MAX_CARDS];
 static int card_count = -1;
 static unsigned shown_version = (unsigned)-1;
@@ -305,6 +307,8 @@ static void build_test_page(lv_obj_t * scr)
 }
 
 static void refresh_ha(void);   /* plus bas : rebuild_grid()/update_card() en dépendent */
+static void rebuild_grid(const ha_state_t * s);
+static void update_card(int i, const ha_card_t * c);
 
 /* ---------- Page Réglages : ordre, icône, masquage des cartes ---------- */
 
@@ -524,12 +528,34 @@ static void build_settings_page(lv_obj_t * scr)
 
 static void on_card_clicked(lv_event_t * e)
 {
+    if(edit_mode) return;   /* en édition, l'appui déplace/redimensionne (tâches suivantes), ne bascule rien */
     int i = (int)(intptr_t)lv_event_get_user_data(e);
     if(cards[i].kind == HA_CARD_PAGE) open_test();
     else {
         ha_press(i);
         refresh_ha();   /* bascule à l'écran tout de suite, sans attendre le minuteur à 500 ms */
     }
+}
+
+void ui_toggle_edit(void)
+{
+    edit_mode = !edit_mode;
+    if(edit_btn_lbl)
+        lv_label_set_text(edit_btn_lbl, edit_mode ? LV_SYMBOL_OK "  Terminé" : LV_SYMBOL_EDIT "  Modifier");
+
+    /* refresh_ha() ne reconstruit rien si les données HA n'ont pas changé :
+     * ici c'est le mode édition qui change, pas les données, donc on force
+     * la reconstruction directement plutôt que de passer par lui. */
+    ha_state_t s;
+    ha_snapshot(&s);
+    rebuild_grid(&s);
+    for(int i = 0; i < s.count; i++) update_card(i, &s.cards[i]);
+}
+
+static void on_edit_toggle(lv_event_t * e)
+{
+    (void)e;
+    ui_toggle_edit();
 }
 
 static void build_card(int i, const ha_card_t * c)
@@ -543,7 +569,8 @@ static void build_card(int i, const ha_card_t * c)
     lv_obj_set_size(u->card, c->colspan * cell_w + (c->colspan - 1) * GRID_GAP,
                              c->rowspan * cell_h + (c->rowspan - 1) * GRID_GAP);
     lv_obj_set_style_bg_color(u->card, COL_CARD, 0);
-    lv_obj_set_style_border_width(u->card, 0, 0);
+    lv_obj_set_style_border_width(u->card, edit_mode ? 3 : 0, 0);
+    lv_obj_set_style_border_color(u->card, COL_ACTION, 0);
     lv_obj_set_style_radius(u->card, 24, 0);
     lv_obj_set_style_pad_all(u->card, 22, 0);
     lv_obj_set_flex_flow(u->card, LV_FLEX_FLOW_COLUMN);
@@ -742,11 +769,24 @@ void ui_create(void)
     lbl_time = make_label(page_main, &panel_font_48, COL_TEXT);
     lbl_date = make_label(page_main, &panel_font_20, COL_MUTED);
 
-    /* Bouton Réglages, posé au-dessus de la mise en page (pas affecté par le flux). */
+    /* Boutons Réglages et Modifier, posés au-dessus de la mise en page (pas affectés par le flux). */
     lv_obj_t * settings_entry = settings_btn(page_main, LV_SYMBOL_SETTINGS);
     lv_obj_add_flag(settings_entry, LV_OBJ_FLAG_IGNORE_LAYOUT);
-    lv_obj_align(settings_entry, LV_ALIGN_TOP_RIGHT, -40, 40);
+    lv_obj_align(settings_entry, LV_ALIGN_TOP_RIGHT, 0, 0);   /* la marge de la page (40px) suffit déjà */
     lv_obj_add_event_cb(settings_entry, on_settings_entry, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t * edit_btn = lv_button_create(page_main);
+    lv_obj_set_style_bg_color(edit_btn, COL_CARD, 0);
+    lv_obj_set_style_bg_color(edit_btn, COL_PRESSED, LV_STATE_PRESSED);
+    lv_obj_set_style_shadow_width(edit_btn, 0, 0);
+    lv_obj_set_style_radius(edit_btn, 16, 0);
+    lv_obj_set_style_pad_hor(edit_btn, 24, 0);
+    lv_obj_set_style_pad_ver(edit_btn, 16, 0);
+    lv_obj_add_flag(edit_btn, LV_OBJ_FLAG_IGNORE_LAYOUT);
+    lv_obj_align(edit_btn, LV_ALIGN_TOP_RIGHT, -(56 + 16), 0);   /* à gauche du bouton Réglages (56px) + un espace */
+    lv_obj_add_event_cb(edit_btn, on_edit_toggle, LV_EVENT_CLICKED, NULL);
+    edit_btn_lbl = make_label(edit_btn, &panel_font_20, COL_TEXT);
+    lv_label_set_text(edit_btn_lbl, LV_SYMBOL_EDIT "  Modifier");
 
     /* Grille de cartes, qui prend la hauteur restante et défile au besoin */
     grid = lv_obj_create(page_main);

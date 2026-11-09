@@ -9,10 +9,12 @@
 #include <fcntl.h>
 #include <linux/input.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <time.h>
 #include <unistd.h>
 
 #ifndef BL
@@ -21,6 +23,7 @@
 #define BITS(n) (((n) + 8 * sizeof(long) - 1) / (8 * sizeof(long)))
 #define STEP 64              /* sur 0..2047, comme p105-keys : 64 ≈ le minimum utile */
 #define SWITCH_NIGHT 1       /* position « muet » d'iOS, orange visible */
+#define HOME_LONG_MS 600     /* au-delà : bascule le mode édition plutôt que d'aller à l'accueil */
 
 static int keys = -1;
 static lv_indev_t * touch_indev;
@@ -28,6 +31,14 @@ static int max_bl = -1;
 static bool screen_off;
 static bool night;
 static int day_level = -1;   /* luminosité à retrouver en sortant du mode nuit */
+static uint32_t home_down_ms;
+
+static uint32_t now_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint32_t)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
+}
 
 static int rd_int(const char * f)
 {
@@ -117,9 +128,15 @@ static void handle(const struct input_event * ev)
     else if(ev->type == EV_KEY && ev->value == 1 && ev->code == KEY_POWER) {
         set_screen(screen_off);
     }
-    else if(ev->type == EV_KEY && ev->value == 1 && ev->code == KEY_HOMEPAGE) {
-        if(screen_off) set_screen(true);
-        else ui_home();
+    else if(ev->type == EV_KEY && ev->code == KEY_HOMEPAGE) {
+        /* Mesuré à l'appui et au relâchement plutôt qu'à l'appui seul : un
+         * appui long bascule le mode édition au lieu de revenir à l'accueil. */
+        if(ev->value == 1) home_down_ms = now_ms();
+        else if(ev->value == 0) {
+            if(screen_off) set_screen(true);
+            else if(now_ms() - home_down_ms >= HOME_LONG_MS) ui_toggle_edit();
+            else ui_home();
+        }
     }
     else if(ev->type == EV_SW && ev->code == SW_MUTE_DEVICE) {
         set_night(ev->value == SWITCH_NIGHT);
