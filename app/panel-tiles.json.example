@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "tiles": [
+    { "entity": "light.salon", "icon": "ampoule", "hidden": false },
+    { "entity": "switch.prise", "icon": "prise", "hidden": false },
+    { "entity": "sensor.salon", "icon": "", "hidden": false },
+    { "entity": "panel.test", "icon": "", "hidden": true }
+  ]
+}

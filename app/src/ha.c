@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #include "ha.h"
+#include "tiles.h"
 
 #include <errno.h>
 #include <netdb.h>
@@ -29,6 +30,7 @@ static pthread_cond_t wake = PTHREAD_COND_INITIALIZER;
 static ha_state_t state;
 static bool stop_flag;
 static unsigned press_mask;      /* cartes à basculer ou déclencher */
+static bool tiles_dirty;         /* réglages (ordre/icône/masquage) à sauvegarder côté hôte */
 static int failures;
 
 static const char * cfg(const char * key, const char * fallback)
@@ -312,6 +314,58 @@ static void send_press(const char * entity)
     http("POST", path, body, NULL, 0);
 }
 
+/* Superpose l'ordre, l'icône et le masquage lus depuis le service de config
+ * hôte (s'il répond) sur les cartes déjà construites depuis HA_CARDS. Une
+ * entité présente dans HA_CARDS mais pas encore dans les préférences (nouvelle
+ * carte ajoutée côté hôte) est ajoutée à la suite, visible par défaut. */
+static void apply_tile_prefs(ha_state_t * s)
+{
+    tile_pref_t prefs[TILES_MAX];
+    int n = tiles_fetch(prefs, TILES_MAX);
+    if(n < 0) return;
+
+    ha_card_t reordered[HA_MAX_CARDS];
+    bool used[HA_MAX_CARDS] = {0};
+    int count = 0;
+
+    for(int i = 0; i < n && count < HA_MAX_CARDS; i++) {
+        for(int j = 0; j < s->count; j++) {
+            if(used[j] || strcmp(s->cards[j].entity, prefs[i].entity)) continue;
+            reordered[count] = s->cards[j];
+            snprintf(reordered[count].icon, sizeof reordered[count].icon, "%s", prefs[i].icon);
+            reordered[count].hidden = prefs[i].hidden;
+            used[j] = true;
+            count++;
+            break;
+        }
+    }
+    for(int j = 0; j < s->count && count < HA_MAX_CARDS; j++)
+        if(!used[j]) reordered[count++] = s->cards[j];
+
+    memcpy(s->cards, reordered, sizeof(ha_card_t) * (size_t)count);
+    s->count = count;
+}
+
+/* Réduit l'état courant aux champs que le service hôte doit retenir, et l'y envoie. */
+static void save_tile_prefs(void)
+{
+    ha_state_t s;
+    pthread_mutex_lock(&lock);
+    s = state;
+    pthread_mutex_unlock(&lock);
+
+    tile_pref_t prefs[HA_MAX_CARDS];
+    int n = 0;
+    for(int i = 0; i < s.count; i++) {
+        if(s.cards[i].kind == HA_CARD_PAGE) continue;   /* pas une entité HA, rien à retenir */
+        snprintf(prefs[n].entity, sizeof prefs[n].entity, "%s", s.cards[i].entity);
+        snprintf(prefs[n].icon, sizeof prefs[n].icon, "%s", s.cards[i].icon);
+        prefs[n].hidden = s.cards[i].hidden;
+        n++;
+    }
+    tiles_save(prefs, n);
+}
+
 static void * run(void * arg)
 {
     (void)arg;
@@ -345,7 +399,10 @@ static void * run(void * arg)
 
         pthread_mutex_lock(&lock);
         press_mask &= ~mask;
+        bool save_needed = tiles_dirty;
+        tiles_dirty = false;
         pthread_mutex_unlock(&lock);
+        if(save_needed) save_tile_prefs();
 
         /* Attend POLL_MS, ou moins si l'interface demande une action. */
         struct timespec until;
@@ -379,6 +436,8 @@ void ha_start(void)
                             "sensor.salon=Salon,sensor.chambre=Chambre,scene.soiree=Soirée,cover.volet=Volet,"
                             "panel.test=Test animation");
 
+    apply_tile_prefs(&state);
+
     fprintf(stderr, "ha: %d carte(s)%s\n", state.count, state.demo ? ", mode démo" : "");
     pthread_create(&worker, NULL, run, NULL);
 }
@@ -411,6 +470,46 @@ void ha_press(int index)
             if(state.demo) snprintf(state.cards[index].state, HA_TEXT, "%s", state.cards[index].on ? "on" : "off");
         }
         state.version++;
+        pthread_cond_signal(&wake);
+    }
+    pthread_mutex_unlock(&lock);
+}
+
+void ha_tile_move(int index, int dir)
+{
+    pthread_mutex_lock(&lock);
+    int j = index + (dir < 0 ? -1 : 1);
+    if(index >= 0 && index < state.count && j >= 0 && j < state.count) {
+        ha_card_t tmp = state.cards[index];
+        state.cards[index] = state.cards[j];
+        state.cards[j] = tmp;
+        state.version++;
+        tiles_dirty = true;
+        pthread_cond_signal(&wake);
+    }
+    pthread_mutex_unlock(&lock);
+}
+
+void ha_tile_toggle_hidden(int index)
+{
+    pthread_mutex_lock(&lock);
+    if(index >= 0 && index < state.count) {
+        state.cards[index].hidden = !state.cards[index].hidden;
+        state.version++;
+        tiles_dirty = true;
+        pthread_cond_signal(&wake);
+    }
+    pthread_mutex_unlock(&lock);
+}
+
+void ha_tile_cycle_icon(int index)
+{
+    pthread_mutex_lock(&lock);
+    if(index >= 0 && index < state.count) {
+        const char * next = tiles_icon_next(state.cards[index].icon);
+        snprintf(state.cards[index].icon, sizeof state.cards[index].icon, "%s", next);
+        state.version++;
+        tiles_dirty = true;
         pthread_cond_signal(&wake);
     }
     pthread_mutex_unlock(&lock);

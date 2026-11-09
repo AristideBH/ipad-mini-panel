@@ -21,3 +21,4 @@ app/target/build/
 # Application
 app/build-*/
 app/panel.env
+app/panel-tiles.json

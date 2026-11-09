@@ -10,6 +10,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include "ui.h"
 #include "ha.h"
+#include "tiles.h"
 #include "lvgl.h"
 
 #include <stdint.h>
@@ -47,6 +48,8 @@ typedef struct {
 
 static lv_obj_t * page_main;
 static lv_obj_t * page_test;
+static lv_obj_t * page_settings;
+static lv_obj_t * settings_list;   /* conteneur des lignes, reconstruit à chaque ouverture */
 static lv_obj_t * lbl_perf;  /* compteur i/s et CPU de LVGL, créé une fois pour toutes */
 static lv_obj_t * lbl_fps;
 static lv_obj_t * lbl_time;
@@ -56,6 +59,7 @@ static lv_obj_t * grid;
 static card_ui_t cards[HA_MAX_CARDS];
 static int card_count = -1;
 static unsigned shown_version = (unsigned)-1;
+static unsigned shown_struct_hash;   /* ordre/masquage/icône pris en compte depuis la grille affichée */
 
 static const char * jours[] = {"dimanche", "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi"};
 static const char * mois[] = {"janvier", "février", "mars", "avril", "mai", "juin", "juillet",
@@ -117,9 +121,8 @@ static void slide_done(lv_anim_t * a)
     tr.running = false;
 }
 
-static void show_page(lv_obj_t * to, bool forward)
+static void show_page(lv_obj_t * from, lv_obj_t * to, bool forward)
 {
-    lv_obj_t * from = forward ? page_main : page_test;
     if(tr.running || lv_obj_has_flag(from, LV_OBJ_FLAG_HIDDEN)) return;
 
     /* Les deux pages photographiées une fois, dans leur état du moment. */
@@ -163,7 +166,7 @@ static void show_page(lv_obj_t * to, bool forward)
     tr.frames = 0;
     tr.t0 = lv_tick_get();
     slide_exec(NULL, 0);
-    if(forward && lbl_perf) lv_obj_remove_flag(lbl_perf, LV_OBJ_FLAG_HIDDEN);
+    if(to == page_test && lbl_perf) lv_obj_remove_flag(lbl_perf, LV_OBJ_FLAG_HIDDEN);
 
     lv_anim_t a;
     lv_anim_init(&a);
@@ -179,12 +182,12 @@ static void show_page(lv_obj_t * to, bool forward)
 
 static void open_test(void)
 {
-    show_page(page_test, true);
+    show_page(page_main, page_test, true);
 }
 
 static void close_test(void)
 {
-    show_page(page_main, false);
+    show_page(page_test, page_main, false);
 }
 
 static void on_back(lv_event_t * e)
@@ -197,6 +200,37 @@ static void on_test_gesture(lv_event_t * e)
 {
     (void)e;
     if(lv_indev_get_gesture_dir(lv_indev_active()) == LV_DIR_RIGHT) close_test();
+}
+
+static void refresh_settings(void);   /* définie plus bas, avec le reste de la page Réglages */
+
+static void open_settings(void)
+{
+    refresh_settings();
+    show_page(page_main, page_settings, true);
+}
+
+static void close_settings(void)
+{
+    show_page(page_settings, page_main, false);
+}
+
+static void on_settings_back(lv_event_t * e)
+{
+    (void)e;
+    close_settings();
+}
+
+static void on_settings_gesture(lv_event_t * e)
+{
+    (void)e;
+    if(lv_indev_get_gesture_dir(lv_indev_active()) == LV_DIR_RIGHT) close_settings();
+}
+
+static void on_settings_entry(lv_event_t * e)
+{
+    (void)e;
+    open_settings();
 }
 
 static void build_test_page(lv_obj_t * scr)
@@ -266,6 +300,139 @@ static void build_test_page(lv_obj_t * scr)
 
 static void refresh_ha(void);   /* plus bas : rebuild_grid()/update_card() en dépendent */
 
+/* ---------- Page Réglages : ordre, icône, masquage des cartes ---------- */
+
+static lv_obj_t * settings_btn(lv_obj_t * parent, const char * symbol)
+{
+    lv_obj_t * b = lv_button_create(parent);
+    lv_obj_set_style_bg_color(b, COL_CARD, 0);
+    lv_obj_set_style_bg_color(b, COL_PRESSED, LV_STATE_PRESSED);
+    lv_obj_set_style_shadow_width(b, 0, 0);
+    lv_obj_set_style_radius(b, 12, 0);
+    lv_obj_set_size(b, 56, 56);
+    lv_obj_t * l = make_label(b, &panel_font_20, COL_TEXT);
+    lv_obj_center(l);
+    lv_label_set_text(l, symbol);
+    return b;
+}
+
+static void on_tile_up(lv_event_t * e)
+{
+    ha_tile_move((int)(intptr_t)lv_event_get_user_data(e), -1);
+    refresh_settings();
+    refresh_ha();
+}
+
+static void on_tile_down(lv_event_t * e)
+{
+    ha_tile_move((int)(intptr_t)lv_event_get_user_data(e), 1);
+    refresh_settings();
+    refresh_ha();
+}
+
+static void on_tile_hide(lv_event_t * e)
+{
+    ha_tile_toggle_hidden((int)(intptr_t)lv_event_get_user_data(e));
+    refresh_settings();
+    refresh_ha();
+}
+
+static void on_tile_icon(lv_event_t * e)
+{
+    ha_tile_cycle_icon((int)(intptr_t)lv_event_get_user_data(e));
+    refresh_settings();
+    refresh_ha();
+}
+
+static void build_settings_row(int i, const ha_card_t * c)
+{
+    lv_obj_t * row = lv_obj_create(settings_list);
+    lv_obj_set_size(row, lv_pct(100), 72);
+    lv_obj_set_style_bg_color(row, COL_CARD, 0);
+    lv_obj_set_style_border_width(row, 0, 0);
+    lv_obj_set_style_radius(row, 16, 0);
+    lv_obj_set_style_pad_hor(row, 16, 0);
+    lv_obj_set_style_pad_gap(row, 10, 0);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    if(c->hidden) lv_obj_set_style_bg_opa(row, LV_OPA_50, 0);
+
+    lv_obj_t * icon_btn = settings_btn(row, tiles_icon_symbol(c->icon) ? tiles_icon_symbol(c->icon) : "?");
+    lv_obj_add_event_cb(icon_btn, on_tile_icon, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+
+    lv_obj_t * name = make_label(row, &panel_font_20, c->hidden ? COL_MUTED : COL_TEXT);
+    lv_obj_set_flex_grow(name, 1);
+    lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+    lv_label_set_text(name, c->name);
+
+    lv_obj_t * up = settings_btn(row, LV_SYMBOL_UP);
+    lv_obj_add_event_cb(up, on_tile_up, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+
+    lv_obj_t * down = settings_btn(row, LV_SYMBOL_DOWN);
+    lv_obj_add_event_cb(down, on_tile_down, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+
+    lv_obj_t * hide = settings_btn(row, c->hidden ? LV_SYMBOL_EYE_CLOSE : LV_SYMBOL_EYE_OPEN);
+    lv_obj_add_event_cb(hide, on_tile_hide, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+}
+
+static void refresh_settings(void)
+{
+    static ha_state_t s;   /* ~3 Ko, hors de la pile */
+    ha_snapshot(&s);
+    lv_obj_clean(settings_list);
+    for(int i = 0; i < s.count; i++) build_settings_row(i, &s.cards[i]);
+}
+
+static void build_settings_page(lv_obj_t * scr)
+{
+    page_settings = lv_obj_create(scr);
+    lv_obj_set_size(page_settings, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(page_settings, COL_BG, 0);
+    lv_obj_set_style_bg_opa(page_settings, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(page_settings, 0, 0);
+    lv_obj_set_style_radius(page_settings, 0, 0);
+    lv_obj_set_style_pad_all(page_settings, 40, 0);
+    lv_obj_set_style_pad_row(page_settings, 20, 0);
+    lv_obj_set_flex_flow(page_settings, LV_FLEX_FLOW_COLUMN);
+    lv_obj_remove_flag(page_settings, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(page_settings, LV_OBJ_FLAG_GESTURE_BUBBLE);
+    lv_obj_add_event_cb(page_settings, on_settings_gesture, LV_EVENT_GESTURE, NULL);
+    lv_obj_add_flag(page_settings, LV_OBJ_FLAG_HIDDEN);
+
+    lv_obj_t * back = lv_button_create(page_settings);
+    lv_obj_set_style_bg_color(back, COL_CARD, 0);
+    lv_obj_set_style_bg_color(back, COL_PRESSED, LV_STATE_PRESSED);
+    lv_obj_set_style_shadow_width(back, 0, 0);
+    lv_obj_set_style_radius(back, 16, 0);
+    lv_obj_set_style_pad_hor(back, 24, 0);
+    lv_obj_set_style_pad_ver(back, 16, 0);
+    lv_obj_add_event_cb(back, on_settings_back, LV_EVENT_CLICKED, NULL);
+    lv_obj_t * back_lbl = make_label(back, &panel_font_20, COL_TEXT);
+    lv_label_set_text(back_lbl, LV_SYMBOL_LEFT "  Retour");
+
+    lv_obj_t * title = make_label(page_settings, &panel_font_48, COL_TEXT);
+    lv_label_set_text(title, "Réglages");
+
+    lv_obj_t * help = make_label(page_settings, &panel_font_16, COL_MUTED);
+    lv_obj_set_width(help, lv_pct(100));
+    lv_label_set_long_mode(help, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(help, "Icône : touche pour changer. Flèches : déplace la carte. Œil : "
+                            "affiche ou masque sur l'écran principal. Pas d'ajout de nouvelle "
+                            "entité ici pour l'instant : modifier HA_CARDS côté hôte.");
+
+    settings_list = lv_obj_create(page_settings);
+    lv_obj_set_width(settings_list, lv_pct(100));
+    lv_obj_set_flex_grow(settings_list, 1);
+    lv_obj_set_style_bg_opa(settings_list, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(settings_list, 0, 0);
+    lv_obj_set_style_pad_all(settings_list, 0, 0);
+    lv_obj_set_style_pad_row(settings_list, 10, 0);
+    lv_obj_set_flex_flow(settings_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_scroll_dir(settings_list, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(settings_list, LV_SCROLLBAR_MODE_ACTIVE);
+}
+
 static void on_card_clicked(lv_event_t * e)
 {
     int i = (int)(intptr_t)lv_event_get_user_data(e);
@@ -278,6 +445,8 @@ static void on_card_clicked(lv_event_t * e)
 
 static void build_card(int i, const ha_card_t * c)
 {
+    if(c->hidden) return;   /* masquée depuis la page Réglages : absente de la grille principale */
+
     card_ui_t * u = &cards[i];
     u->kind = c->kind;
     u->card = lv_obj_create(grid);
@@ -296,14 +465,16 @@ static void build_card(int i, const ha_card_t * c)
         lv_obj_add_event_cb(u->card, on_card_clicked, LV_EVENT_CLICKED, (void *)(intptr_t)i);
     }
 
+    const char * sym = c->icon[0] ? tiles_icon_symbol(c->icon) : NULL;   /* NULL : icône par défaut du type */
+
     u->big = make_label(u->card, &panel_font_48, COL_MUTED);
-    if(c->kind == HA_CARD_TOGGLE) lv_label_set_text(u->big, LV_SYMBOL_POWER);
+    if(c->kind == HA_CARD_TOGGLE) lv_label_set_text(u->big, sym ? sym : LV_SYMBOL_POWER);
     if(c->kind == HA_CARD_ACTION) {
-        lv_label_set_text(u->big, LV_SYMBOL_PLAY);
+        lv_label_set_text(u->big, sym ? sym : LV_SYMBOL_PLAY);
         lv_obj_set_style_text_color(u->big, COL_ACTION, 0);
     }
     if(c->kind == HA_CARD_PAGE) {
-        lv_label_set_text(u->big, LV_SYMBOL_RIGHT);
+        lv_label_set_text(u->big, sym ? sym : LV_SYMBOL_RIGHT);
         lv_obj_set_style_text_color(u->big, COL_ACTION, 0);
     }
     if(c->kind == HA_CARD_VALUE) lv_obj_set_style_text_color(u->big, COL_TEXT, 0);
@@ -325,6 +496,8 @@ static void rebuild_grid(const ha_state_t * s)
 
 static void update_card(int i, const ha_card_t * c)
 {
+    if(c->hidden) return;   /* pas de carte construite pour elle : rien à mettre à jour */
+
     card_ui_t * u = &cards[i];
     lv_label_set_text(u->name, c->name);
 
@@ -366,6 +539,21 @@ static void refresh_clock(void)
     lv_label_set_text_fmt(lbl_date, "%s %d %s", jours[t.tm_wday], t.tm_mday, mois[t.tm_mon]);
 }
 
+/* Ordre, masquage et icône : ce qui change la liste des cartes à construire,
+ * par opposition à leur état (valeur, allumé/éteint…) qui se met juste à jour
+ * en place. Évite de reconstruire toute la grille à chaque relevé HA. */
+static unsigned struct_hash(const ha_state_t * s)
+{
+    unsigned h = 2166136261u;
+    for(int i = 0; i < s->count; i++) {
+        const ha_card_t * c = &s->cards[i];
+        for(const char * p = c->entity; *p; p++) h = (h ^ (unsigned char)*p) * 16777619u;
+        for(const char * p = c->icon; *p; p++) h = (h ^ (unsigned char)*p) * 16777619u;
+        h = (h ^ (c->hidden ? 1u : 0u)) * 16777619u;
+    }
+    return h;
+}
+
 static void refresh_ha(void)
 {
     static ha_state_t s;   /* ~3 Ko, hors de la pile */
@@ -373,7 +561,11 @@ static void refresh_ha(void)
     if(s.version == shown_version) return;
     shown_version = s.version;
 
-    if(s.count != card_count) rebuild_grid(&s);
+    unsigned h = struct_hash(&s);
+    if(s.count != card_count || h != shown_struct_hash) {
+        rebuild_grid(&s);
+        shown_struct_hash = h;
+    }
     for(int i = 0; i < s.count; i++) update_card(i, &s.cards[i]);
 
     if(s.demo) {
@@ -401,6 +593,7 @@ static void refresh_ha(void)
 void ui_home(void)
 {
     if(page_test && !lv_obj_has_flag(page_test, LV_OBJ_FLAG_HIDDEN)) close_test();
+    else if(page_settings && !lv_obj_has_flag(page_settings, LV_OBJ_FLAG_HIDDEN)) close_settings();
     else if(grid && !tr.running) lv_obj_scroll_to_y(grid, 0, LV_ANIM_ON);
 }
 
@@ -451,6 +644,12 @@ void ui_create(void)
     lbl_time = make_label(page_main, &panel_font_48, COL_TEXT);
     lbl_date = make_label(page_main, &panel_font_20, COL_MUTED);
 
+    /* Bouton Réglages, posé au-dessus de la mise en page (pas affecté par le flux). */
+    lv_obj_t * settings_entry = settings_btn(page_main, LV_SYMBOL_SETTINGS);
+    lv_obj_add_flag(settings_entry, LV_OBJ_FLAG_IGNORE_LAYOUT);
+    lv_obj_align(settings_entry, LV_ALIGN_TOP_RIGHT, -40, 40);
+    lv_obj_add_event_cb(settings_entry, on_settings_entry, LV_EVENT_CLICKED, NULL);
+
     /* Grille de cartes, qui prend la hauteur restante et défile au besoin */
     grid = lv_obj_create(page_main);
     lv_obj_set_width(grid, lv_pct(100));
@@ -468,6 +667,7 @@ void ui_create(void)
     lbl_status = make_label(page_main, &panel_font_16, COL_MUTED);
 
     build_test_page(scr);
+    build_settings_page(scr);
 
     on_tick(NULL);
     lv_timer_create(on_tick, 500, NULL);

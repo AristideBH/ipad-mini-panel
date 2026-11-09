@@ -42,6 +42,8 @@ typedef struct {
     bool on;                   /* bascule : état allumé (on, open…) */
     bool known;                /* au moins un relevé réussi */
     bool missing;              /* HA répond 404 : entité inconnue */
+    char icon[16];             /* clé sémantique (tiles.h), vide = icône par défaut du type */
+    bool hidden;                /* masquée de la grille principale, éditable en Réglages */
 } ha_card_t;
 
 typedef struct {
@@ -58,5 +60,12 @@ void ha_stop(void);
 void ha_snapshot(ha_state_t * out);
 /* Bascule ou déclenche la carte n°index, selon son type. Sans effet sur une carte valeur. */
 void ha_press(int index);
+
+/* ---------- Réglages d'affichage (page Réglages), superposés à HA_CARDS ----------
+ * Chaque appel sauvegarde vers le service de config hôte en arrière-plan,
+ * sans bloquer l'appelant (voir tiles.h). */
+void ha_tile_move(int index, int dir);         /* dir<0 : vers le haut, dir>0 : vers le bas */
+void ha_tile_toggle_hidden(int index);
+void ha_tile_cycle_icon(int index);
 
 #endif

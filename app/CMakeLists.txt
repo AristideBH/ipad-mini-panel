@@ -36,7 +36,7 @@ target_compile_definitions(lvgl PUBLIC ${PANEL_DEFS})
 
 # Polices Montserrat Latin-1 + symboles LVGL, générées par scripts/gen-fonts.sh
 file(GLOB PANEL_FONTS ${CMAKE_CURRENT_SOURCE_DIR}/src/fonts/*.c)
-add_executable(panel src/main.c src/ui.c src/ha.c src/buttons.c ${PANEL_FONTS})
+add_executable(panel src/main.c src/ui.c src/ha.c src/tiles.c src/buttons.c ${PANEL_FONTS})
 target_compile_definitions(panel PRIVATE ${PANEL_DEFS})
 target_compile_options(panel PRIVATE -Wall -Wextra)
 target_link_libraries(panel PRIVATE lvgl)

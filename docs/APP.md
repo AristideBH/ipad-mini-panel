@@ -57,6 +57,19 @@ L'appli reprend les boutons à `p105-keys`, le programme de Cascadia qui les gè
 
 `scripts/app-deploy.sh` arrête `p105-keys` avant de lancer l'appli, et `--stop` le relance en rallumant l'écran. Si `p105-keys` tourne encore, l'appli ne peut pas prendre les boutons : elle l'écrit dans `panel.log` et continue sans eux. Dans le simulateur, les boutons n'existent pas.
 
+## Page Réglages (disposition des cartes)
+
+Un bouton engrenage en haut à droite de l'écran principal ouvre une page qui liste les cartes de `HA_CARDS` : icône (touche pour changer parmi un petit jeu fixe), flèches pour réordonner, œil pour masquer/afficher sur la grille principale. Pas d'ajout de nouvelle entité ici, ni de nom personnalisé : ça reste dans `HA_CARDS` et `panel.env`, côté hôte.
+
+Chaque changement est sauvegardé dans `app/panel-tiles.json`, via un petit service HTTP sur l'hôte (`scripts/config-server.sh`, Python 3 seul, sans dépendance) — sans lui, l'appli garde simplement l'ordre et l'affichage de `HA_CARDS` tels quels, rien de plus :
+
+```sh
+scripts/config-server.sh                 # écoute sur :8787
+CONFIG_HOST=10.55.0.1 CONFIG_PORT=8787 scripts/app-deploy.sh --bg   # sur l'iPad : .1, l'hôte du câble
+```
+
+Dans le simulateur sur le PC, les deux tournent en local : `CONFIG_HOST=127.0.0.1 scripts/app-sim.sh`.
+
 ## Réglages
 
 ```sh
