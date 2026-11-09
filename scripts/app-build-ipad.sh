@@ -7,6 +7,19 @@
 # Vérification : docker run --rm --platform linux/arm/v7 alpine:3.22 uname -m  -> armv7l
 # Si « exec format error » : docker run --privileged --rm tonistiigi/binfmt --install arm
 set -eu
+
+# Docker inaccessible alors qu'on est inscrit au groupe : la session n'a pas
+# encore pris le groupe en compte (il faut redémarrer). En attendant, on se
+# relance à travers le groupe docker.
+if ! docker info >/dev/null 2>&1; then
+    if getent group docker | grep -qw "$(id -un)" && [ -z "${PANEL_SG:-}" ]; then
+        echo "Docker inaccessible depuis cette session, relance via « sg docker » (redémarrer le PC règle ça pour de bon)." >&2
+        PANEL_SG=1 exec sg docker -c "PANEL_SG=1 '$(readlink -f "$0")'"
+    fi
+    echo "Docker inaccessible. Vérifier : getent group docker ; sudo systemctl status docker" >&2
+    exit 1
+fi
+
 cd "$(dirname "$0")/../app"
 
 docker run --rm --platform linux/arm/v7 \
