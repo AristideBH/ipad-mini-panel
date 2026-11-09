@@ -759,6 +759,11 @@ static void build_card(int i, const ha_card_t * c)
         lv_obj_set_style_border_width(handle, 0, 0);
         lv_obj_set_style_pad_all(handle, 0, 0);
         lv_obj_remove_flag(handle, LV_OBJ_FLAG_SCROLLABLE);
+        /* u->card est en disposition flex (colonne) : sans ce drapeau, la
+         * poignée est traitée comme un enfant de cette disposition et
+         * l'alignement manuel ci-dessous est ignoré (elle finit poussée en
+         * bas-gauche par SPACE_BETWEEN, pas au coin voulu). */
+        lv_obj_add_flag(handle, LV_OBJ_FLAG_FLOATING);
         lv_obj_align(handle, LV_ALIGN_BOTTOM_RIGHT, 2, 2);
         lv_obj_add_flag(handle, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_add_event_cb(handle, on_handle_pressed, LV_EVENT_PRESSED, (void *)(intptr_t)i);
