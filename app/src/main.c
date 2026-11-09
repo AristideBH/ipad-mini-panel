@@ -5,14 +5,15 @@
 #include "ha.h"
 #include "ui.h"
 
+#include <fcntl.h>
 #include <signal.h>
+#include <sys/file.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
 #include <unistd.h>
 
 #if PANEL_FBDEV
-#include <fcntl.h>
 #include <linux/kd.h>
 #include <sys/ioctl.h>
 #endif
@@ -73,8 +74,21 @@ static void display_init(void)
 }
 #endif
 
+/* Une seule instance à la fois : deux appli sur le même écran se recouvrent. */
+static int single_instance(void)
+{
+    int fd = open("/tmp/panel.lock", O_RDWR | O_CREAT, 0644);
+    if(fd < 0) return 1;
+    if(flock(fd, LOCK_EX | LOCK_NB) != 0) {
+        fprintf(stderr, "panel: une autre instance tourne déjà, abandon\n");
+        return 0;
+    }
+    return 1; /* fd volontairement gardé ouvert : le verrou dure jusqu'à la sortie */
+}
+
 int main(void)
 {
+    if(!single_instance()) return 1;
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
 
