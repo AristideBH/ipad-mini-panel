@@ -30,6 +30,31 @@ static void on_signal(int sig)
     running = 0;
 }
 
+/* Pour trouver la cause d'un arrêt silencieux (rien dans panel.log ni dmesg) :
+ * on consigne le signal et l'adresse fautive avant de sortir. write() seul est
+ * sûr ici (pas de malloc/fprintf dans un gestionnaire de signal). */
+static void on_fatal_signal(int sig, siginfo_t * si, void * ctx)
+{
+    (void)ctx;
+    char buf[96];
+    int n = snprintf(buf, sizeof buf, "panel: signal fatal %d, adresse fautive %p\n",
+                      sig, si ? si->si_addr : NULL);
+    if(n > 0) write(STDERR_FILENO, buf, (size_t)n);
+    _exit(128 + sig);
+}
+
+static void install_crash_handler(void)
+{
+    struct sigaction sa = {0};
+    sa.sa_sigaction = on_fatal_signal;
+    sa.sa_flags = SA_SIGINFO;
+    sigaction(SIGSEGV, &sa, NULL);
+    sigaction(SIGABRT, &sa, NULL);
+    sigaction(SIGBUS, &sa, NULL);
+    sigaction(SIGFPE, &sa, NULL);
+    sigaction(SIGILL, &sa, NULL);
+}
+
 static uint32_t tick_ms(void)
 {
     struct timespec ts;
@@ -93,6 +118,7 @@ int main(void)
     if(!single_instance()) return 1;
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
+    install_crash_handler();
 
     lv_init();
     lv_tick_set_cb(tick_ms);

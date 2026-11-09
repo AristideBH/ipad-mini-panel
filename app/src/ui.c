@@ -47,6 +47,7 @@ typedef struct {
 
 static lv_obj_t * page_main;
 static lv_obj_t * page_test;
+static lv_obj_t * lbl_perf;  /* compteur i/s et CPU de LVGL, créé une fois pour toutes */
 static lv_obj_t * lbl_fps;
 static lv_obj_t * lbl_time;
 static lv_obj_t * lbl_date;
@@ -112,7 +113,7 @@ static void slide_done(lv_anim_t * a)
     lv_draw_buf_destroy(tr.snap_from);
     lv_draw_buf_destroy(tr.snap_to);
     lv_obj_remove_flag(tr.to, LV_OBJ_FLAG_HIDDEN);
-    if(tr.to == page_main) lv_sysmon_hide_performance(NULL);
+    if(tr.to == page_main && lbl_perf) lv_obj_add_flag(lbl_perf, LV_OBJ_FLAG_HIDDEN);
     tr.running = false;
 }
 
@@ -162,7 +163,7 @@ static void show_page(lv_obj_t * to, bool forward)
     tr.frames = 0;
     tr.t0 = lv_tick_get();
     slide_exec(NULL, 0);
-    if(forward) lv_sysmon_show_performance(NULL);
+    if(forward && lbl_perf) lv_obj_remove_flag(lbl_perf, LV_OBJ_FLAG_HIDDEN);
 
     lv_anim_t a;
     lv_anim_init(&a);
@@ -210,6 +211,9 @@ static void build_test_page(lv_obj_t * scr)
     lv_obj_set_style_pad_row(page_test, 24, 0);
     lv_obj_set_flex_flow(page_test, LV_FLEX_FLOW_COLUMN);
     lv_obj_remove_flag(page_test, LV_OBJ_FLAG_SCROLLABLE);
+    /* Par défaut un geste remonte jusqu'au premier ancêtre sans ce bit (l'écran,
+     * qui n'en a pas) : sans ce retrait, l'événement n'atteint jamais page_test. */
+    lv_obj_remove_flag(page_test, LV_OBJ_FLAG_GESTURE_BUBBLE);
     lv_obj_add_event_cb(page_test, on_test_gesture, LV_EVENT_GESTURE, NULL);
     lv_obj_add_flag(page_test, LV_OBJ_FLAG_HIDDEN);
 
@@ -416,7 +420,16 @@ void ui_create(void)
     lv_obj_t * scr = lv_screen_active();
     lv_obj_set_style_bg_color(scr, COL_BG, 0);
     lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
-    lv_sysmon_hide_performance(NULL);   /* montré seulement sur la page de test */
+
+    /* Créée une seule fois : lv_sysmon_show/hide_performance() ne sont pas
+     * conçues pour être rappelées à chaque passage sur la page de test (chaque
+     * appel refait une étiquette, un minuteur et un rappel d'affichage sans
+     * jamais détruire les précédents). On garde la main sur l'étiquette créée
+     * ici et on bascule nous-mêmes son indicateur masqué. */
+    lv_sysmon_show_performance(NULL);
+    lv_obj_t * sys_layer = lv_display_get_layer_sys(NULL);
+    lbl_perf = lv_obj_get_child(sys_layer, lv_obj_get_child_count(sys_layer) - 1);
+    if(lbl_perf) lv_obj_add_flag(lbl_perf, LV_OBJ_FLAG_HIDDEN);   /* montrée seulement sur la page de test */
 
     page_main = lv_obj_create(scr);
     lv_obj_set_size(page_main, lv_pct(100), lv_pct(100));
