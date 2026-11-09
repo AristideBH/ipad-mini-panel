@@ -60,7 +60,8 @@ static int settings_browse_count;
 static lv_obj_t * lbl_fps;
 static lv_obj_t * lbl_time;
 static lv_obj_t * lbl_date;
-static lv_obj_t * lbl_status;
+static lv_obj_t * lbl_conn;      /* barre de statut : icône seule, pas de texte */
+static lv_obj_t * lbl_battery;
 static lv_obj_t * grid;
 static int32_t cell_w, cell_h;   /* taille d'une cellule, calculée une fois la grille mise en page */
 static bool edit_mode;           /* grille principale : déplacer/redimensionner au lieu de basculer */
@@ -860,25 +861,18 @@ static void refresh_ha(void)
     }
     for(int i = 0; i < s.count; i++) update_card(i, &s.cards[i]);
 
-    if(s.demo) {
-        lv_label_set_text(lbl_status, LV_SYMBOL_WARNING "  Mode démo : HA_HOST absent");
-        lv_obj_set_style_text_color(lbl_status, COL_MUTED, 0);
-    }
-    else if(s.count == 0) {
-        lv_label_set_text(lbl_status, LV_SYMBOL_WARNING "  Aucune carte : renseigner HA_CARDS");
-        lv_obj_set_style_text_color(lbl_status, COL_ERR, 0);
+    if(!lbl_conn) { /* barre de statut pas encore construite */ }
+    else if(s.demo || s.count == 0 || s.auth_error) {
+        lv_label_set_text(lbl_conn, LV_SYMBOL_WARNING);
+        lv_obj_set_style_text_color(lbl_conn, COL_MUTED, 0);
     }
     else if(!s.online) {
-        lv_label_set_text(lbl_status, LV_SYMBOL_CLOSE "  Home Assistant injoignable");
-        lv_obj_set_style_text_color(lbl_status, COL_ERR, 0);
-    }
-    else if(s.auth_error) {
-        lv_label_set_text(lbl_status, LV_SYMBOL_CLOSE "  Jeton refusé par Home Assistant");
-        lv_obj_set_style_text_color(lbl_status, COL_ERR, 0);
+        lv_label_set_text(lbl_conn, LV_SYMBOL_CLOSE);
+        lv_obj_set_style_text_color(lbl_conn, COL_ERR, 0);
     }
     else {
-        lv_label_set_text(lbl_status, LV_SYMBOL_WIFI "  Home Assistant connecté");
-        lv_obj_set_style_text_color(lbl_status, COL_OK, 0);
+        lv_label_set_text(lbl_conn, LV_SYMBOL_WIFI);
+        lv_obj_set_style_text_color(lbl_conn, COL_OK, 0);
     }
 }
 
@@ -898,11 +892,49 @@ void ui_set_night(bool on)
     lv_obj_set_style_bg_opa(top, on ? LV_OPA_50 : LV_OPA_TRANSP, 0);
 }
 
+/* Lit un entier dans un fichier sysfs ; -1 si absent (simulateur, ou pas de
+ * batterie). N'existe que sur l'iPad : /sys/class/power_supply/battery/. */
+static int read_sysfs_int(const char * path)
+{
+    FILE * f = fopen(path, "r");
+    if(!f) return -1;
+    int v = -1;
+    if(fscanf(f, "%d", &v) != 1) v = -1;
+    fclose(f);
+    return v;
+}
+
+static void refresh_battery(void)
+{
+    if(!lbl_battery) return;
+    int pct = read_sysfs_int("/sys/class/power_supply/battery/capacity");
+    if(pct < 0) {
+        lv_label_set_text(lbl_battery, "");   /* pas de batterie ici (simulateur) */
+        return;
+    }
+    char status[16] = "";
+    FILE * f = fopen("/sys/class/power_supply/battery/status", "r");
+    if(f) {
+        if(fscanf(f, "%15s", status) != 1) status[0] = '\0';
+        fclose(f);
+    }
+    bool charging = !strcmp(status, "Charging");
+    const char * sym = charging ? LV_SYMBOL_CHARGE
+                      : pct >= 80 ? LV_SYMBOL_BATTERY_FULL
+                      : pct >= 55 ? LV_SYMBOL_BATTERY_3
+                      : pct >= 30 ? LV_SYMBOL_BATTERY_2
+                      : pct >= 15 ? LV_SYMBOL_BATTERY_1
+                      : LV_SYMBOL_BATTERY_EMPTY;
+    lv_label_set_text_fmt(lbl_battery, "%s %d%%", sym, pct);
+    lv_obj_set_style_text_color(lbl_battery, !charging && pct < 15 ? COL_ERR : COL_MUTED, 0);
+}
+
 static void on_tick(lv_timer_t * t)
 {
     (void)t;
     refresh_clock();
     refresh_ha();
+    refresh_battery();
 
     /* Le relevé des entités HA (plusieurs requêtes, pas instantané) tourne en
      * arrière-plan : on vérifie ici s'il est arrivé, pour afficher la liste
@@ -931,6 +963,19 @@ void ui_create(void)
     lv_obj_set_style_pad_row(page_main, 20, 0);
     lv_obj_set_flex_flow(page_main, LV_FLEX_FLOW_COLUMN);
     lv_obj_remove_flag(page_main, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* Barre de statut : icônes seules (connexion, batterie), pas de texte.
+     * Configurable plus tard (d'autres indicateurs) ; pour l'instant fixe. */
+    lv_obj_t * status_bar = lv_obj_create(page_main);
+    lv_obj_set_size(status_bar, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(status_bar, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(status_bar, 0, 0);
+    lv_obj_set_style_pad_all(status_bar, 0, 0);
+    lv_obj_set_style_pad_gap(status_bar, 16, 0);
+    lv_obj_set_flex_flow(status_bar, LV_FLEX_FLOW_ROW);
+    lv_obj_remove_flag(status_bar, LV_OBJ_FLAG_SCROLLABLE);
+    lbl_conn = make_label(status_bar, &panel_font_20, COL_MUTED);
+    lbl_battery = make_label(status_bar, &panel_font_20, COL_MUTED);
 
     /* En-tête */
     lbl_time = make_label(page_main, &panel_font_48, COL_TEXT);
@@ -966,9 +1011,6 @@ void ui_create(void)
      * sa cellule (col/row/colspan/rowspan), voir build_card()/rebuild_grid(). */
     lv_obj_set_scroll_dir(grid, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(grid, LV_SCROLLBAR_MODE_ACTIVE);
-
-    /* Pied : état de la connexion */
-    lbl_status = make_label(page_main, &panel_font_16, COL_MUTED);
 
     build_test_page(scr);
     build_settings_page(scr);
