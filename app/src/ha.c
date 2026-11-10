@@ -272,14 +272,34 @@ static void poll_once(void)
     if(reached) {
         if(failures >= OFFLINE_AFTER) fprintf(stderr, "ha: de nouveau joignable\n");
         failures = 0;
-        /* Un appui pendant le relevé a déjà basculé l'état à l'écran : on
-         * garde ce retour visuel, le relevé suivant dira la vérité. */
-        for(int i = 0; i < s.count; i++)
-            if(press_mask & (1u << i)) s.cards[i].on = state.cards[i].on;
-        s.online = true;
-        s.auth_error = auth;
-        s.version = state.version + 1;
-        state = s;
+        /* On ne recopie que les champs relevés sur HA (état, nom, unité…),
+         * carte par carte identifiée par son entité plutôt que par son
+         * index : `state` a pu changer entre-temps (glisser-déposer,
+         * redimensionnement, ajout/retrait depuis Réglages), pendant les
+         * un à deux secondes que prend ce relevé réseau sans tenir le
+         * verrou. Écraser `state` en bloc avec `s` (l'instantané pris
+         * avant le relevé) effaçait ces modifications si elles tombaient
+         * pendant la fenêtre d'un relevé : c'était systématique pour un
+         * redimensionnement, geste plus long qu'un simple appui. */
+        for(int i = 0; i < s.count; i++) {
+            for(int j = 0; j < state.count; j++) {
+                if(strcmp(state.cards[j].entity, s.cards[i].entity)) continue;
+                ha_card_t * d = &state.cards[j];
+                d->known = s.cards[i].known;
+                d->missing = s.cards[i].missing;
+                snprintf(d->state, sizeof d->state, "%s", s.cards[i].state);
+                snprintf(d->unit, sizeof d->unit, "%s", s.cards[i].unit);
+                if(!d->name_fixed) snprintf(d->name, sizeof d->name, "%s", s.cards[i].name);
+                /* Un appui pendant le relevé a déjà basculé l'état à
+                 * l'écran : on garde ce retour visuel, le relevé suivant
+                 * dira la vérité. */
+                if(!(press_mask & (1u << j))) d->on = s.cards[i].on;
+                break;
+            }
+        }
+        state.online = true;
+        state.auth_error = auth;
+        state.version++;
     }
     else {
         failures++;
@@ -393,7 +413,14 @@ static void apply_tile_prefs(ha_state_t * s)
 {
     tile_pref_t prefs[TILES_MAX];
     int n = tiles_fetch(prefs, TILES_MAX);
-    if(n < 0) return;
+    if(n < 0) {
+        /* Service de config injoignable : on garde HA_CARDS tel quel, mais
+         * les cartes fraîches ont col/row = -1 (pas encore placées, voir
+         * add_card()) -- sans cet appel elles restaient hors de la grille,
+         * invisibles, au lieu de s'auto-placer. */
+        auto_place_missing(s);
+        return;
+    }
 
     ha_card_t reordered[HA_MAX_CARDS];
     bool used[HA_MAX_CARDS] = {0};

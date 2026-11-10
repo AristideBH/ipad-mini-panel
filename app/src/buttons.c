@@ -24,6 +24,8 @@
 #define STEP 64              /* sur 0..2047, comme p105-keys : 64 ≈ le minimum utile */
 #define SWITCH_NIGHT 1       /* position « muet » d'iOS, orange visible */
 #define HOME_LONG_MS 600     /* au-delà : bascule le mode édition plutôt que d'aller à l'accueil */
+#define HOME_LONG_MAX_MS 2000 /* au-delà : relâchement ignoré (doigt oublié, ou combo marche+accueil
+                                * pour revenir sous iOS), pas un appui volontaire sur ce bouton */
 
 static int keys = -1;
 static lv_indev_t * touch_indev;
@@ -134,8 +136,11 @@ static void handle(const struct input_event * ev)
         if(ev->value == 1) home_down_ms = now_ms();
         else if(ev->value == 0) {
             if(screen_off) set_screen(true);
-            else if(now_ms() - home_down_ms >= HOME_LONG_MS) ui_toggle_edit();
-            else ui_home();
+            else {
+                uint32_t held = now_ms() - home_down_ms;
+                if(held >= HOME_LONG_MS && held < HOME_LONG_MAX_MS) ui_toggle_edit();
+                else if(held < HOME_LONG_MS) ui_home();
+            }
         }
     }
     else if(ev->type == EV_SW && ev->code == SW_MUTE_DEVICE) {
